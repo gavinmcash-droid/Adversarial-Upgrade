@@ -1,0 +1,11 @@
+{
+  "path": "/home/gavinator6454/Projects/Adversarial/runs/pilot/defender_101",
+  "checkpoint_sha256": "425903ce392c2306eb23bee7fad1a7c250a3031ddb3d4be222d42e6cda1c199b",
+  "channels": [
+    2,
+    4,
+    4,
+    1
+  ],
+  "data_stream_seed": 4530964668423301196
+}

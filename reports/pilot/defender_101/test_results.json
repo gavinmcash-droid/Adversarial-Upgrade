@@ -1,0 +1,31 @@
+{
+  "metrics": {
+    "bob": {
+      "normalized_l1": 0.009625556878745556,
+      "bit_error_rate": 0.000823974609375,
+      "message_accuracy": 0.987548828125
+    },
+    "attack_baseline_201": {
+      "normalized_l1": 0.22798165678977966,
+      "bit_error_rate": 0.209197998046875,
+      "message_accuracy": 0.019775390625
+    },
+    "attack_wider_201": {
+      "normalized_l1": 0.19751989841461182,
+      "bit_error_rate": 0.1890411376953125,
+      "message_accuracy": 0.031494140625
+    },
+    "random_guess": {
+      "normalized_l1": 0.5027313232421875,
+      "bit_error_rate": 0.5027313232421875,
+      "message_accuracy": 0.0
+    }
+  },
+  "examples": 4096,
+  "test_seed": 1621001529614467470,
+  "checkpoint_hashes": {
+    "attack_baseline_201": "5dcc374801e835ae22ccf3f60e8e58b98c1c0a6610ad33aa726c33578d7dc689",
+    "attack_wider_201": "e8d061122b9fbaace36c324d85397eda23019725a0bcdb03a0d5e4596edb2fff"
+  },
+  "defender_hash": "425903ce392c2306eb23bee7fad1a7c250a3031ddb3d4be222d42e6cda1c199b"
+}

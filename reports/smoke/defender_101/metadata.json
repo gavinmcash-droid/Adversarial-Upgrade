@@ -1,0 +1,91 @@
+{
+  "config": {
+    "defender_seeds": [
+      101
+    ],
+    "attacker_seeds": [
+      201
+    ],
+    "defender_updates": 4,
+    "attacker_updates": 4,
+    "batch_size": 32,
+    "validation_size": 128,
+    "test_size": 256,
+    "validate_every": 2,
+    "learning_rate": 0.0008,
+    "threads": 1,
+    "defender_seconds": 30,
+    "attacker_seconds": 30,
+    "baseline_channels": [
+      2,
+      4,
+      4,
+      1
+    ],
+    "wider_channels": [
+      4,
+      8,
+      8,
+      1
+    ]
+  },
+  "seed": 101,
+  "stage": "defender",
+  "python": "3.12.3",
+  "torch": "2.14.1+cpu",
+  "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.39",
+  "device": "cpu",
+  "cuda_available": false,
+  "source_hashes": {
+    "anc/run.py": "592c7a32eefb771f78acb5f147cbe70ea809bcc06ec504b6464e480a2ce5ef2f",
+    "anc/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "anc/core.py": "cad66862a37f1fb5e24ca230ef70f22b60bb40aa6d1b4b070ffc3ac93bb6314e",
+    "configs/pilot.json": "d25af5a8af395bd906543f1dd1fceaf43a6d03170272113d4d636d01a83a38ad",
+    "configs/full.json": "83b011218d41459f86fcf8cd00ee86ee70a8b31a8eb3cb4e26d95953a0476aa6",
+    "configs/smoke.json": "e1a36c8ec3a46423a5b7848ea3f02c7182c296100aa18605ede1fc3e1adec729",
+    "tests/test_core.py": "f7d0bb79b72e3a710e4c7e50eab1875e4288bcdd3fb297cac473c54415dd0825"
+  },
+  "stream_seeds": {
+    "defender_train": 2225352078627092713,
+    "attacker_train": 4530964668423301196,
+    "validation": 5509775177734316536,
+    "final_test": 1621001529614467470,
+    "random_guess": 5056829897143959540
+  },
+  "parameter_counts": {
+    "alice": 1111,
+    "bob": 1111,
+    "baseline_eve": 599,
+    "wider_eve": 717
+  },
+  "reference_revision": "30efea2b4d170c862703ff16f0fd5ad4ab76ddc7",
+  "paper": "https://arxiv.org/abs/1610.06918v1",
+  "dependencies": [
+    "contourpy==1.4.0",
+    "cycler==0.12.1",
+    "filelock==3.32.3",
+    "fonttools==4.67.0",
+    "fsspec==2026.7.0",
+    "iniconfig==2.3.1",
+    "Jinja2==3.1.6",
+    "kiwisolver==1.5.1",
+    "MarkupSafe==3.0.3",
+    "matplotlib==3.11.2",
+    "mpmath==1.3.0",
+    "networkx==3.6.1",
+    "numpy==2.5.4",
+    "packaging==26.3",
+    "pillow==13.0.0",
+    "pluggy==1.7.0",
+    "Pygments==2.21.0",
+    "pyparsing==3.3.3",
+    "pytest==9.1.1",
+    "python-dateutil==3.0.0",
+    "setuptools==78.1.0",
+    "six==1.17.0",
+    "sympy==1.14.0",
+    "torch==2.14.1+cpu",
+    "typing_extensions==4.16.0",
+    "tzdata==2026.5"
+  ]
+}

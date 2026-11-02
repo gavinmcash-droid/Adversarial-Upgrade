@@ -1,0 +1,14 @@
+{
+  "python": "3.12.3",
+  "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.39",
+  "processor": "Intel Core 7 150U",
+  "logical_cpus": 12,
+  "ram": "15 GiB reported by free -h",
+  "torch": "2.14.1+cpu",
+  "cuda_available": false,
+  "torch_cuda_build": null,
+  "device": "cpu",
+  "threads_used": 1,
+  "system_pip_initially_available": false,
+  "system_ensurepip_available": false
+}

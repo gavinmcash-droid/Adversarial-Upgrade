@@ -1,0 +1,22 @@
+{
+  "bob": {
+    "normalized_l1": 0.49948856234550476,
+    "bit_error_rate": 0.491943359375,
+    "message_accuracy": 0.0
+  },
+  "attack_baseline_201": {
+    "normalized_l1": 0.4995769262313843,
+    "bit_error_rate": 0.491943359375,
+    "message_accuracy": 0.0
+  },
+  "attack_wider_201": {
+    "normalized_l1": 0.5005275011062622,
+    "bit_error_rate": 0.508056640625,
+    "message_accuracy": 0.0
+  },
+  "random_guess": {
+    "normalized_l1": 0.491943359375,
+    "bit_error_rate": 0.491943359375,
+    "message_accuracy": 0.0
+  }
+}

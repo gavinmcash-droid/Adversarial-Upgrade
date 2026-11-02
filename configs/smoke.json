@@ -1,0 +1,1 @@
+{"defender_seeds":[101],"attacker_seeds":[201],"defender_updates":4,"attacker_updates":4,"batch_size":32,"validation_size":128,"test_size":256,"validate_every":2,"learning_rate":0.0008,"threads":1,"defender_seconds":30,"attacker_seconds":30,"baseline_channels":[2,4,4,1],"wider_channels":[4,8,8,1]}

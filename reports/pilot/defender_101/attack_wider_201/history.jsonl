@@ -1,0 +1,7 @@
+{"step": 0, "seconds": 0.02638499100021363, "eve": {"normalized_l1": 0.4999566376209259, "bit_error_rate": 0.499267578125, "message_accuracy": 0.0}}
+{"step": 250, "seconds": 0.7598424759999034, "eve": {"normalized_l1": 0.499866247177124, "bit_error_rate": 0.499267578125, "message_accuracy": 0.0}}
+{"step": 500, "seconds": 1.3034756080000989, "eve": {"normalized_l1": 0.4862794876098633, "bit_error_rate": 0.49859619140625, "message_accuracy": 0.0}}
+{"step": 750, "seconds": 1.9184286069998961, "eve": {"normalized_l1": 0.29609259963035583, "bit_error_rate": 0.238525390625, "message_accuracy": 0.009765625}}
+{"step": 1000, "seconds": 2.4472415629998068, "eve": {"normalized_l1": 0.23341964185237885, "bit_error_rate": 0.21221923828125, "message_accuracy": 0.0166015625}}
+{"step": 1250, "seconds": 3.002348186999825, "eve": {"normalized_l1": 0.2100939005613327, "bit_error_rate": 0.197479248046875, "message_accuracy": 0.01953125}}
+{"step": 1500, "seconds": 3.528377184999954, "eve": {"normalized_l1": 0.19791075587272644, "bit_error_rate": 0.190155029296875, "message_accuracy": 0.02392578125}}

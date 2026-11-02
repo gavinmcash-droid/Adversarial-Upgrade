@@ -1,0 +1,50 @@
++ /home/gavinator6454/Projects/Adversarial-Upgrade/.venv/bin/python -m anc.run plot --config /home/gavinator6454/Projects/Adversarial-Upgrade/runs/smoke_streamlined_01/config.json --root /home/gavinator6454/Projects/Adversarial-Upgrade/runs/smoke_streamlined_01
++ /home/gavinator6454/Projects/Adversarial-Upgrade/.venv/bin/python -m anc.run demo --config /home/gavinator6454/Projects/Adversarial-Upgrade/runs/smoke_streamlined_01/config.json --root /home/gavinator6454/Projects/Adversarial-Upgrade/runs/smoke_streamlined_01
+ILLUSTRATIVE EXAMPLES ONLY; not aggregate evidence. Predictions thresholded at zero.
+Plaintext 0001011000010111
+Bob 1111111111111111
+attack_baseline_201 1111111111111111
+attack_wider_201 0000000000000000
+Plaintext 1100010100111110
+Bob 1111111111111111
+attack_baseline_201 1111111111111111
+attack_wider_201 0000000000000000
+Plaintext 1011011100000010
+Bob 1111111111111111
+attack_baseline_201 1111111111111111
+attack_wider_201 0000000000000000
+
+Final metrics: /home/gavinator6454/Projects/Adversarial-Upgrade/runs/smoke_streamlined_01/defender_101/test_results.json
+{
+  "metrics": {
+    "bob": {
+      "normalized_l1": 0.49948856234550476,
+      "bit_error_rate": 0.491943359375,
+      "message_accuracy": 0.0
+    },
+    "attack_baseline_201": {
+      "normalized_l1": 0.4995769262313843,
+      "bit_error_rate": 0.491943359375,
+      "message_accuracy": 0.0
+    },
+    "attack_wider_201": {
+      "normalized_l1": 0.5005275011062622,
+      "bit_error_rate": 0.508056640625,
+      "message_accuracy": 0.0
+    },
+    "random_guess": {
+      "normalized_l1": 0.491943359375,
+      "bit_error_rate": 0.491943359375,
+      "message_accuracy": 0.0
+    }
+  },
+  "examples": 256,
+  "test_seed": 1621001529614467470,
+  "checkpoint_hashes": {
+    "attack_baseline_201": "07ba1ee53ca2a82f05ac7ea0f79fcce49720fe3fcb49473d0e8dafcca42aa60d",
+    "attack_wider_201": "680cd8813f5986762a8ee91e4653c88e3b9597ac1c0e296f32dd7bb65778980e"
+  },
+  "defender_hash": "ee585ea9b6b9f242417ea2b886753d5913c51337ae33c080df949e5b09b97ba2"
+}
+
+Open plot: /home/gavinator6454/Projects/Adversarial-Upgrade/runs/smoke_streamlined_01/defender_101/validation.png

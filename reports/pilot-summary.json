@@ -1,0 +1,23 @@
+{
+  "defender_101": {
+    "status": "complete",
+    "updates": 3000,
+    "eve_updates": 6000,
+    "seconds": 29.916013113999725,
+    "selected_step": 3000
+  },
+  "attack_baseline_201": {
+    "status": "complete",
+    "updates": 1500,
+    "seconds": 3.1179855679997672,
+    "parameters": 599,
+    "selected_step": 1500
+  },
+  "attack_wider_201": {
+    "status": "complete",
+    "updates": 1500,
+    "seconds": 3.5300065400001586,
+    "parameters": 717,
+    "selected_step": 1500
+  }
+}

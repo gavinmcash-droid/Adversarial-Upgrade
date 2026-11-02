@@ -1,0 +1,11 @@
+{
+  "path": "/home/gavinator6454/Projects/Adversarial/runs/smoke/defender_101",
+  "checkpoint_sha256": "ee585ea9b6b9f242417ea2b886753d5913c51337ae33c080df949e5b09b97ba2",
+  "channels": [
+    4,
+    8,
+    8,
+    1
+  ],
+  "data_stream_seed": 4530964668423301196
+}

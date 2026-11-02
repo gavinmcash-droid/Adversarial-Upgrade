@@ -1,0 +1,41 @@
+# Controlled attacker-capacity experiment
+
+Question: does a wider independently trained Eve recover more plaintext information than a baseline Eve against the **same frozen Alice/Bob pair**? This is a student experiment, not a novelty claim, proof of security, or improvement over published results.
+
+## Sources inspected before implementation
+
+- Abadi and Andersen, [Learning to Protect Communications with Adversarial Neural Cryptography](https://arxiv.org/abs/1610.06918v1), especially sections 2.1–2.5. PDF downloaded and converted with pdftotext; local copies under ignored `sources/`.
+- [Reference repository](https://github.com/rfratila/Adversarial-Neural-Cryptography), revision `30efea2b4d170c862703ff16f0fd5ad4ab76ddc7`. Inspected README, net.py, neural_encryption.py, datagen.py, and dependency list. Code was read, not executed or trusted as ground truth.
+- Confirmed `neural_encryption.py` Eve-labeled loop calls `sess.run(trainAB, ...)`, although `trainE` is defined. Its rank-3 input to dense maps the last singleton dimension independently rather than globally mixing the message/key vector. It also uses Eve strides [1,1,1,1], a batch-mean quadratic penalty, and reuses its batch across many updates. We do not copy those behaviors.
+
+## Architecture and scaling decisions
+
+Messages and independently sampled keys: 16 uniform bits represented as float32 −1/+1; natural repeats are possible, no intentional fixed-key reuse. Alice/Bob each concatenate 16 data values and 16 key values into a flat 32-vector. Dense 32→32 mixes all inputs. Eve gets ciphertext only, dense 16→32. A singleton channel is added **after** dense. Four convolutions use kernels [4,2,1,1], strides [1,2,1,1]. Baseline channels [2,4,4,1]; wider channels [4,8,8,1]. Dense and first three convolutions use sigmoid; last uses tanh. Ciphertext remains floating point.
+
+Shape sequence after dense: (batch,1,32) → (batch,c1,32) → (batch,c2,16) → (batch,c3,16) → (batch,1,16). SAME padding adds [1,2] for the first convolution; the second needs no padding for length 32. Paper gives dimensions/strides but does not explicitly specify padding. SAME is an explicit inference consistent with its described lengths and the repository. Eve uses the paper's shared convolution stack, not the repository's divergent strides.
+
+Parameter counts include biases: Alice=1111, Bob=1111, baseline Eve=599, wider Eve=717 (verified by summing actual tensors). Wider Eve has about 19.7% more total parameters, not twice as many. Dense accounts for 544 Eve parameters; convolution totals are 55 vs 173. Alice/Bob always use fixed baseline channels independent of attacker configuration.
+
+Let d_i = sum_j |prediction_ij − plaintext_ij|/2. Train Eve by mean(d_E). Train Alice/Bob by mean[d_B + ((8−d_E)/8)^2]. The square is **per example before averaging**. This retains Bob's message-sum scale relative to the normalized quadratic term. The paper defines raw L1 but later uses N/2 as chance and discusses bit-equivalent error. With −1/+1 values raw chance L1 is N. We explicitly resolve that ambiguity with half-L1 bit-equivalent units; this is an interpretation, not a claim of bit-for-bit reproduction. Do not substitute mean(d_B)/16 or a batch-mean square without declaring a new experiment.
+
+## Protocol, controls, selection
+
+Stage 1: Adam lr .0008, betas (.9,.999), eps 1e-8, no weight decay, constant learning rate. Each cycle has one joint Alice/Bob step and two training-Eve steps, each on newly sampled examples. Freeze Eve's parameters but keep the derivative through ciphertext for Alice/Bob. Detach ciphertext for Eve steps. Keep best Bob validation continuous L1 checkpoint; this rule is fixed in advance and does not select for a fresh attacker's performance. It can select a defender with poor confidentiality: report that honestly. No defender is silently discarded.
+
+Stage 2: reload that same checkpoint, freeze both defenders, initialize new Eves. Same initialization seed index across architectures, but tensor shapes differ, so weights are not numerically matched. All fresh attackers receive the identical training stream for a given defender, identical validation examples, batch size, optimizer and step budget. Attacker checkpoints minimize validation continuous L1, with earliest checkpoint winning ties. Each architecture has separate timing; baseline is run first (order/thermal effects can bias timing). Equal updates are not equal FLOPs.
+
+Distinct SHA256-derived RNG seeds separate defender training, attacker training, validation, final test, and random-guess control. A seed and stream name determine a reproducible CPU generator. Validation/test draws are never optimized. Independent streams do not promise distinct values: the finite 16-bit message/key space naturally allows collisions. The test set is intentionally shared across attackers and Bob. Evaluation checks completion and equal attacker budgets, writes once, and refuses to overwrite results. Do not use pilot test results to tune configurations; future tuning requires a newly reserved final test seed.
+
+Smoke: 4 defender cycles (4 AB + 8 Eve updates), 4 steps per fresh attacker, batch 32. Execution validation only.
+
+Pilot, fixed before launch: one defender seed 101, attacker initialization 201 per architecture; 3000 defender cycles (3000 AB + 6000 Eve updates), 1500 updates per fresh Eve, batch 256. Time caps: 480s defender + 150s baseline + 150s wider = 780s; smoke has at most 90s. Checks occur at update boundaries, so one update and checkpoint overhead may exceed a cap slightly. A timed-out attack is preserved and excluded from a matched-budget comparison. A partial defender may still support a clearly labeled feasibility probe.
+
+Proposed full experiment, **not launched**: three defender seeds [1101,1102,1103], three fresh initialization seeds [1201,1202,1203] per architecture per defender; up to 150000 defender cycles and 250000 steps per attacker, batch 4096. These seeds reserve streams distinct from the pilot, whose final test is already exposed. These paper-scale ceilings are expensive on this CPU; agree on resources and freeze a feasible budget before execution. Pilot batch is smaller and cannot directly predict full-batch cost. No automatic hyperparameter search, Eve reset/retraining during stage 1, early success threshold, or robustness certification. PyTorch default initialization and CPU numerics differ from the original TensorFlow implementation.
+
+## Outcomes and interpretation
+
+Report separately: normalized continuous L1 = mean absolute error/2, discrete BER = fraction of signs incorrect (zero predicts +1), whole-message accuracy = fraction of all 16 signs correct. Lower first two and higher third indicate better reconstruction. Random independent ±1 guesses have expected BER .5 and whole-message accuracy 1/65536; finite draws fluctuate. A zero-output predictor has continuous loss .5 but predicts all +1 after thresholding. Continuous loss is not measured BER.
+
+Primary full-study comparison: paired difference (wider BER − baseline BER), averaging initializations within each defender, then reporting all three defender-level differences and their mean/range. Also report all individual seeds, L1, message accuracy, training budgets, selected steps, runtime, and defender Bob quality. Three defenders give weak uncertainty estimates; avoid treating correlated bits or initializations as independent defender replications. Width may help, hurt, or make no detectable difference. Finite optimization, local minima, weak defenders and limited seeds confound interpretations of capacity. Chance-level BER does not rule out partial, joint, or other information leakage and is never a security proof. Larger attacks, other architectures and leakage metrics remain outside this initial scope.
+
+Plots are generated only from saved validation histories. Final metrics are saved separately, never overlaid as training curves. Failures and time limits remain in their original run directories with status/traceback; existing directories cannot be overwritten. Checkpoints include selected/final weights and optimizer state; final RNG state is retained, but automatic exact-resume support is not implemented.

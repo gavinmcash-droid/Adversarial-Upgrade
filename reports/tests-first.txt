@@ -1,0 +1,37 @@
+F.......                                                                 [100%]
+=================================== FAILURES ===================================
+____________________ test_shapes_mixing_padding_and_counts _____________________
+
+models = (Keyed(
+  (fc): Linear(in_features=32, out_features=32, bias=True)
+  (convs): ModuleList(
+    (0): Conv1d(1, 2, kernel...=(2,))
+    (2): Conv1d(4, 4, kernel_size=(1,), stride=(1,))
+    (3): Conv1d(4, 1, kernel_size=(1,), stride=(1,))
+  )
+))
+
+    def test_shapes_mixing_padding_and_counts(models):
+        a,b,e=models
+        p,k=sample(generator(1,'shapes'),7)
+        assert a.fc.weight.shape==(32,32) and e.fc.weight.shape==(32,16)
+        # Every output FC feature can depend on every input, before local convolutions.
+        x=torch.randn(1,32,requires_grad=True)
+        a.fc(x)[0,0].backward()
+        assert (x.grad!=0).all()
+        for model,inputs,channels,count in [(a,(p,k),BASE,1123),(b,(p,k),BASE,1123),(e,(p,),BASE,611),(Eve(WIDE),(p,),WIDE,741)]:
+            shapes=[]
+            hooks=[c.register_forward_hook(lambda m,i,o: shapes.append(tuple(o.shape))) for c in model.convs]
+            y=model(*inputs)
+            for h in hooks: h.remove()
+            assert y.shape==(7,16)
+            assert shapes==[(7,channels[0],32),(7,channels[1],16),(7,channels[2],16),(7,1,16)]
+            assert y.dtype==torch.float32 and (y.abs()<=1).all()
+>           assert sum(v.numel() for v in model.parameters())==count
+E           assert 1111 == 1123
+E            +  where 1111 = sum(<generator object test_shapes_mixing_padding_and_counts.<locals>.<genexpr> at 0x7045cab80fb0>)
+
+tests/test_core.py:33: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_core.py::test_shapes_mixing_padding_and_counts - assert 111...
+1 failed, 7 passed in 2.50s
