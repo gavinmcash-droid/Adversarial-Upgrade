@@ -6,12 +6,18 @@ of semantic security, computational security, or cryptographic confidentiality.
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable
+import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
 from typing import Any
 
 import torch
 
-from .core import generator, metrics, sample
+from .core import Eve, Keyed, freeze, generator, metrics, sample, stream_seed
 
 
 Encryptor = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
@@ -134,3 +140,231 @@ def determinism_diagnostic(
         "max_absolute_difference": float(difference.max().item()),
         "mean_absolute_difference": float(difference.mean().item()),
     }
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected a JSON object at {path}")
+    return value
+
+
+def _alternative_key(seed: int, size: int) -> torch.Tensor:
+    _, key = sample(generator(seed, "security_key_alternative"), size)
+    return key
+
+
+def _load_defender_checkpoint(path: Path) -> tuple[Keyed, Keyed]:
+    state = torch.load(path, weights_only=True)
+    if not isinstance(state, dict) or "alice" not in state or "bob" not in state:
+        raise ValueError("Defender checkpoint must contain alice and bob state dictionaries")
+    alice, bob = Keyed(), Keyed()
+    alice.load_state_dict(state["alice"])
+    bob.load_state_dict(state["bob"])
+    freeze(alice)
+    freeze(bob)
+    return alice, bob
+
+
+def _load_attackers(defender: Path, limitations: list[str]) -> list[tuple[str, Eve]]:
+    loaded: list[tuple[str, Eve]] = []
+    for path in sorted(defender.glob("attack_*")):
+        if not path.is_dir():
+            continue
+        checkpoint = path / "best.pt"
+        try:
+            status = _read_json(path / "status.json")
+            parent = _read_json(path / "parent.json")
+            if status.get("status") != "complete":
+                limitations.append(f"Skipped {path.name}: status is not complete")
+                continue
+            if not checkpoint.is_file():
+                limitations.append(f"Skipped {path.name}: missing {checkpoint.name}")
+                continue
+            channels = parent.get("channels")
+            if not isinstance(channels, list) or len(channels) != 4:
+                raise ValueError("parent.json has invalid channels")
+            state = torch.load(checkpoint, weights_only=True)
+            if not isinstance(state, dict) or "eve" not in state:
+                raise ValueError("checkpoint has no Eve state dictionary")
+            eve = Eve(tuple(int(value) for value in channels))
+            eve.load_state_dict(state["eve"])
+            freeze(eve)
+            loaded.append((path.name, eve))
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, RuntimeError) as error:
+            limitations.append(f"Skipped {path.name}: {error}")
+    return loaded
+
+
+def _plot_reconstruction(report: dict[str, Any], output: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    reconstruction = report["reconstruction"]
+    labels = list(reconstruction)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+    for axis, metric in zip(axes, ("bit_error_rate", "normalized_l1")):
+        axis.bar(labels, [reconstruction[label][metric] for label in labels], color="#2878B5")
+        axis.set(title=metric.replace("_", " ").title(), ylabel="Diagnostic value")
+        axis.tick_params(axis="x", rotation=35)
+    fig.suptitle("Diagnostic-stream plaintext reconstruction")
+    fig.savefig(output / "security_reconstruction.png", dpi=300)
+    plt.close(fig)
+
+    fig, axis = plt.subplots(figsize=(9, 4), constrained_layout=True)
+    for label in labels:
+        axis.plot(range(16), reconstruction[label]["per_bit_error_rate"], marker="o", markersize=2.5, label=label)
+    axis.set(
+        title="Per-bit diagnostic reconstruction error",
+        xlabel="Plaintext bit index",
+        ylabel="Bit error rate",
+        xticks=range(16),
+        ylim=(0, 1),
+    )
+    axis.legend(fontsize=7, frameon=False)
+    fig.savefig(output / "per_bit_recovery.png", dpi=300)
+    plt.close(fig)
+
+
+def _plot_sensitivity(report: dict[str, Any], output: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+    images = []
+    for axis, key, title in (
+        (axes[0], "plaintext_sensitivity", "Plaintext-bit flips"),
+        (axes[1], "key_sensitivity", "Key-bit flips"),
+    ):
+        image = axis.imshow(report[key]["normalized_l1_matrix"], vmin=0, vmax=1, cmap="viridis", aspect="auto")
+        images.append(image)
+        axis.set(title=title, xlabel="Ciphertext dimension", ylabel="Input bit")
+    fig.colorbar(images[-1], ax=axes, label="Mean |ciphertext change| / 2", shrink=0.85)
+    fig.suptitle("Ciphertext sensitivity on diagnostic data")
+    fig.savefig(output / "ciphertext_sensitivity.png", dpi=300)
+    plt.close(fig)
+
+
+def _finish_output(temporary: Path, output: Path, report: dict[str, Any]) -> dict[str, Any]:
+    (temporary / "security_report.json").write_text(json.dumps(report, indent=2) + "\n")
+    os.rename(temporary, output)
+    return report
+
+
+def evaluate_security(defender: Path, output: Path, samples: int = 1024) -> dict[str, Any]:
+    """Evaluate checkpoints on new diagnostic streams and write a new report directory.
+
+    The function never reads or writes ``test_results.json`` and refuses to overwrite
+    an existing output directory.
+    """
+
+    _positive_size(samples)
+    defender, output = Path(defender), Path(output)
+    if output.exists():
+        raise FileExistsError(f"Security output already exists: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=output.parent))
+    interpretation = (
+        "These empirical neural-network diagnostics are not a proof of semantic security, "
+        "computational security, or cryptographic confidentiality."
+    )
+    try:
+        limitations: list[str] = []
+        try:
+            metadata = _read_json(defender / "metadata.json")
+            seed = metadata.get("seed")
+            if isinstance(seed, bool) or not isinstance(seed, int):
+                raise ValueError("metadata seed must be an integer")
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            report = {
+                "status": "unavailable",
+                "samples": samples,
+                "limitations": [f"Cannot load defender metadata: {error}"],
+                "interpretation": interpretation,
+            }
+            return _finish_output(temporary, output, report)
+
+        checkpoint = defender / "best.pt"
+        if not checkpoint.is_file():
+            report = {
+                "status": "unavailable",
+                "defender_seed": seed,
+                "samples": samples,
+                "limitations": [f"Missing trained defender checkpoint: {checkpoint}"],
+                "interpretation": interpretation,
+            }
+            return _finish_output(temporary, output, report)
+        try:
+            alice, bob = _load_defender_checkpoint(checkpoint)
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+            report = {
+                "status": "unavailable",
+                "defender_seed": seed,
+                "samples": samples,
+                "limitations": [f"Cannot load trained defender checkpoint {checkpoint}: {error}"],
+                "interpretation": interpretation,
+            }
+            return _finish_output(temporary, output, report)
+
+        attackers = _load_attackers(defender, limitations)
+        plaintext, key = diagnostic_sample(seed, samples)
+        alternative_key = _alternative_key(seed, samples)
+        with torch.no_grad():
+            ciphertext = alice(plaintext, key)
+            alternative_ciphertext = alice(plaintext, alternative_key)
+            reconstruction = {
+                "bob_with_key": reconstruction_diagnostics(bob(ciphertext, key), plaintext),
+                **{
+                    name: reconstruction_diagnostics(eve(ciphertext), plaintext)
+                    for name, eve in attackers
+                },
+                "random_guess": reconstruction_diagnostics(random_guess(seed, samples), plaintext),
+            }
+        key_difference = (alternative_ciphertext - ciphertext).abs() / 2
+        key_diversity = {
+            "mean_normalized_l1": float(key_difference.mean().item()),
+            "mean_sign_change_rate": float(
+                ((alternative_ciphertext >= 0) != (ciphertext >= 0)).float().mean().item()
+            ),
+        }
+        report = {
+            "status": "complete" if not limitations else "partial",
+            "defender_seed": seed,
+            "samples": samples,
+            "diagnostic_stream_seed": stream_seed(seed, "security_diagnostic"),
+            "alternative_key_stream_seed": stream_seed(seed, "security_key_alternative"),
+            "random_guess_stream_seed": stream_seed(seed, "security_random_guess"),
+            "reconstruction": reconstruction,
+            "plaintext_sensitivity": ciphertext_sensitivity(alice, plaintext, key, flip="plaintext"),
+            "key_sensitivity": ciphertext_sensitivity(alice, plaintext, key, flip="key"),
+            "key_diversity": key_diversity,
+            "determinism": determinism_diagnostic(alice, plaintext, key),
+            "limitations": limitations,
+            "interpretation": interpretation,
+        }
+        _plot_reconstruction(report, temporary)
+        _plot_sensitivity(report, temporary)
+        return _finish_output(temporary, output, report)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--defender", required=True, type=Path, help="Saved defender_<seed> directory")
+    parser.add_argument("--output", required=True, type=Path, help="New directory for diagnostic outputs")
+    parser.add_argument("--samples", type=int, default=1024, help="Number of newly generated diagnostic examples")
+    args = parser.parse_args()
+    report = evaluate_security(args.defender, args.output, args.samples)
+    print(f"Security diagnostics {report['status']}: {args.output}")
+    for limitation in report.get("limitations", []):
+        print(f"- {limitation}")
+
+
+if __name__ == "__main__":
+    main()

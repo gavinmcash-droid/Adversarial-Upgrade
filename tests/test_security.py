@@ -1,11 +1,17 @@
+import json
+from pathlib import Path
+import subprocess
+import sys
+
 import pytest
 import torch
 
-from anc.core import generator, sample
+from anc.core import BASE, WIDE, Eve, Keyed, generator, sample, stream_seed
 from anc.security import (
     ciphertext_sensitivity,
     determinism_diagnostic,
     diagnostic_sample,
+    evaluate_security,
     random_guess,
     reconstruction_diagnostics,
 )
@@ -104,3 +110,115 @@ def test_sensitivity_rejects_unknown_flip_target(flip):
 
     with pytest.raises(ValueError, match="plaintext or key"):
         ciphertext_sensitivity(lambda message, secret: message, plaintext, key, flip=flip)
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.write_text(json.dumps(value) + "\n")
+
+
+def _checkpoint_run(root: Path) -> Path:
+    torch.manual_seed(123)
+    defender = root / "defender_31"
+    defender.mkdir(parents=True)
+    config = {
+        "attacker_seeds": [41],
+        "attacker_updates": 5,
+        "baseline_channels": list(BASE),
+        "wider_channels": list(WIDE),
+    }
+    _write_json(defender / "metadata.json", {"seed": 31, "stage": "defender", "config": config})
+    _write_json(defender / "status.json", {"status": "complete", "updates": 5})
+    alice, bob = Keyed(), Keyed()
+    torch.save({"alice": alice.state_dict(), "bob": bob.state_dict(), "step": 5}, defender / "best.pt")
+    for architecture, channels in (("baseline", BASE), ("wider", WIDE)):
+        attack = defender / f"attack_{architecture}_41"
+        attack.mkdir()
+        _write_json(attack / "metadata.json", {"seed": 41, "stage": "attack", "config": config})
+        _write_json(attack / "status.json", {"status": "complete", "updates": 5})
+        _write_json(attack / "parent.json", {"channels": list(channels), "checkpoint_sha256": "test"})
+        eve = Eve(channels)
+        torch.save({"eve": eve.state_dict(), "step": 5}, attack / "best.pt")
+    _write_json(defender / "test_results.json", {"reserved": "must remain unchanged"})
+    return defender
+
+
+def test_evaluate_security_loads_checkpoints_writes_diagnostics_and_preserves_final_test(tmp_path):
+    defender = _checkpoint_run(tmp_path / "study")
+    output = tmp_path / "security"
+    test_result = defender / "test_results.json"
+    before = (test_result.read_bytes(), test_result.stat().st_mtime_ns)
+
+    report = evaluate_security(defender, output, samples=8)
+
+    assert (test_result.read_bytes(), test_result.stat().st_mtime_ns) == before
+    assert report["status"] == "complete"
+    assert report["samples"] == 8
+    assert report["diagnostic_stream_seed"] == stream_seed(31, "security_diagnostic")
+    assert set(report["reconstruction"]) == {
+        "bob_with_key",
+        "attack_baseline_41",
+        "attack_wider_41",
+        "random_guess",
+    }
+    assert len(report["reconstruction"]["attack_baseline_41"]["per_bit_error_rate"]) == 16
+    assert report["plaintext_sensitivity"]["input_bits"] == 16
+    assert report["key_sensitivity"]["ciphertext_dimensions"] == 16
+    assert set(report["key_diversity"]) == {
+        "mean_normalized_l1",
+        "mean_sign_change_rate",
+    }
+    assert report["determinism"]["exact_match"] is True
+    assert "not a proof" in report["interpretation"].lower()
+    expected = {
+        "security_report.json",
+        "security_reconstruction.png",
+        "ciphertext_sensitivity.png",
+        "per_bit_recovery.png",
+    }
+    assert expected <= {path.name for path in output.iterdir()}
+    with pytest.raises(FileExistsError):
+        evaluate_security(defender, output, samples=8)
+
+
+def test_missing_defender_checkpoint_writes_structured_unavailable_report(tmp_path):
+    defender = tmp_path / "defender_2"
+    defender.mkdir()
+    _write_json(defender / "metadata.json", {"seed": 2, "stage": "defender", "config": {}})
+    final_test = defender / "test_results.json"
+    _write_json(final_test, {"reserved": True})
+    before = final_test.read_bytes()
+
+    report = evaluate_security(defender, tmp_path / "security", samples=4)
+
+    assert final_test.read_bytes() == before
+    assert report["status"] == "unavailable"
+    assert any("best.pt" in limitation for limitation in report["limitations"])
+    assert json.loads((tmp_path / "security/security_report.json").read_text()) == report
+    assert list((tmp_path / "security").iterdir()) == [tmp_path / "security/security_report.json"]
+
+
+def test_security_module_cli_reports_unavailable_checkpoint(tmp_path):
+    defender = tmp_path / "defender_3"
+    defender.mkdir()
+    _write_json(defender / "metadata.json", {"seed": 3, "stage": "defender", "config": {}})
+    output = tmp_path / "security"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "anc.security",
+            "--defender",
+            str(defender),
+            "--output",
+            str(output),
+            "--samples",
+            "4",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert "unavailable" in completed.stdout.lower()
+    assert output.joinpath("security_report.json").is_file()
