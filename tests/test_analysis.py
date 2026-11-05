@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
-from anc.analysis import discover_runs, pair_attackers, summarize_pairs
+from anc.analysis import discover_runs, pair_attackers, summarize_pairs, write_analysis
 
 
 METRICS = ("normalized_l1", "bit_error_rate", "message_accuracy")
@@ -185,3 +187,73 @@ def test_missing_expected_architecture_is_reported(tmp_path):
 
     assert "missing_attacker" in {issue.code for issue in inventory.issues}
     assert pair_attackers(inventory) == []
+
+
+def _snapshot_tree(root: Path) -> dict[str, tuple[bytes, int]]:
+    return {
+        str(path.relative_to(root)): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_write_analysis_creates_tables_plots_and_keeps_input_read_only(tmp_path):
+    study = tmp_path / "study"
+    output = tmp_path / "analysis"
+    _make_study(study)
+    before = _snapshot_tree(study)
+
+    result = write_analysis(study, output)
+
+    assert _snapshot_tree(study) == before
+    assert result["pair_count"] == 2
+    assert result["issues"] == []
+    expected = {
+        "analysis_summary.json",
+        "comparison.csv",
+        "comparison.md",
+        "defender_aggregates.csv",
+        "final_test_comparison.png",
+        "paired_differences.png",
+        "validation_curves.png",
+    }
+    assert expected <= {path.name for path in output.iterdir()}
+    saved = json.loads((output / "analysis_summary.json").read_text())
+    assert saved["summary"]["per_seed"][0]["baseline"]["bit_error_rate"] == 0.4
+    assert "validation" not in saved["summary"]["per_seed"][0]["baseline"]
+    csv_text = (output / "comparison.csv").read_text()
+    assert "difference_bit_error_rate" in csv_text
+    assert "-0.1" in csv_text
+    assert "Wider minus baseline" in (output / "comparison.md").read_text()
+    for name in ("final_test_comparison.png", "paired_differences.png", "validation_curves.png"):
+        assert (output / name).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_write_analysis_refuses_to_overwrite_output(tmp_path):
+    study = tmp_path / "study"
+    output = tmp_path / "analysis"
+    _make_study(study)
+    output.mkdir()
+    marker = output / "keep.txt"
+    marker.write_text("keep")
+
+    with pytest.raises(FileExistsError):
+        write_analysis(study, output)
+
+    assert marker.read_text() == "keep"
+
+
+def test_analysis_module_cli_reports_destination(tmp_path):
+    study = tmp_path / "study"
+    output = tmp_path / "analysis"
+    _make_study(study, attacker_seeds=(11,))
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "anc.analysis", "--root", str(study), "--output", str(output)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert str(output) in completed.stdout
+    assert "1 valid baseline/wider pair" in completed.stdout

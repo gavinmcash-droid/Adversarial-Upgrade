@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import argparse
+import csv
 from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 from statistics import fmean
+import tempfile
 from typing import Any
 
 
@@ -341,3 +346,209 @@ def summarize_pairs(pairs: list[ComparisonPair]) -> dict[str, Any]:
         "overall": overall,
         "caveat": caveat,
     }
+
+
+def _comparison_rows(pairs: list[ComparisonPair]) -> list[dict[str, Any]]:
+    rows = []
+    for pair in pairs:
+        row: dict[str, Any] = {
+            "defender_seed": pair.defender_seed,
+            "attacker_seed": pair.attacker_seed,
+        }
+        for architecture, run in (("baseline", pair.baseline), ("wider", pair.wider)):
+            for name in METRIC_NAMES:
+                row[f"{architecture}_{name}"] = run.final_metrics[name]
+            row[f"{architecture}_seconds"] = run.seconds
+            row[f"{architecture}_parameters"] = run.parameters
+        for name, value in pair.differences.items():
+            row[f"difference_{name}"] = value
+        rows.append(row)
+    return rows
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
+    with path.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _write_markdown(path: Path, rows: list[dict[str, Any]]) -> None:
+    headings = [
+        "Defender",
+        "Attacker seed",
+        "Baseline BER",
+        "Wider BER",
+        "BER difference",
+        "Baseline L1",
+        "Wider L1",
+        "Message-accuracy difference",
+        "Runtime difference (s)",
+        "Parameter difference",
+    ]
+    lines = [
+        "# Baseline and wider Eve final-test comparison",
+        "",
+        "Differences are **Wider minus baseline**. Negative BER/L1 differences favor wider Eve; positive message-accuracy differences favor wider Eve.",
+        "",
+        "| " + " | ".join(headings) + " |",
+        "|" + "|".join("---" for _ in headings) + "|",
+    ]
+    for row in rows:
+        values = [
+            str(row["defender_seed"]),
+            str(row["attacker_seed"]),
+            f'{row["baseline_bit_error_rate"]:.6f}',
+            f'{row["wider_bit_error_rate"]:.6f}',
+            f'{row["difference_bit_error_rate"]:.6f}',
+            f'{row["baseline_normalized_l1"]:.6f}',
+            f'{row["wider_normalized_l1"]:.6f}',
+            f'{row["difference_message_accuracy"]:.6f}',
+            f'{row["difference_seconds"]:.6f}',
+            str(row["difference_parameters"]),
+        ]
+        lines.append("| " + " | ".join(values) + " |")
+    lines.extend(
+        [
+            "",
+            "Validation histories are intentionally excluded from this final-test table.",
+            "These descriptive comparisons do not establish statistical significance or cryptographic security.",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines))
+
+
+def _plot_final_metrics(pairs: list[ComparisonPair], path: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    labels = [f"D{pair.defender_seed}/A{pair.attacker_seed}" for pair in pairs]
+    x = list(range(len(pairs)))
+    width = 0.38
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    for axis, metric in zip(axes, METRIC_NAMES):
+        axis.bar([value - width / 2 for value in x], [pair.baseline.final_metrics[metric] for pair in pairs], width, label="Baseline Eve")
+        axis.bar([value + width / 2 for value in x], [pair.wider.final_metrics[metric] for pair in pairs], width, label="Wider Eve")
+        axis.set(title=metric.replace("_", " ").title(), xticks=x, xticklabels=labels, ylabel="Final-test value")
+        axis.tick_params(axis="x", rotation=35)
+    axes[0].legend(frameon=False)
+    fig.suptitle("Final-test reconstruction (held-out data)")
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
+def _plot_differences(pairs: list[ComparisonPair], path: Path) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    labels = [f"D{pair.defender_seed}/A{pair.attacker_seed}" for pair in pairs]
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), constrained_layout=True)
+    for axis, metric in zip(axes, METRIC_NAMES):
+        values = [pair.differences[metric] for pair in pairs]
+        colors = ["#2878B5" if value < 0 else "#D95319" for value in values]
+        axis.bar(labels, values, color=colors)
+        axis.axhline(0, color="black", linewidth=0.8)
+        axis.set(title=metric.replace("_", " ").title(), ylabel="Wider minus baseline")
+        axis.tick_params(axis="x", rotation=35)
+    fig.suptitle("Paired final-test differences")
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
+def _plot_validation(inventory: AnalysisInventory, path: Path) -> bool:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    series: list[tuple[str, list[dict[str, Any]], str]] = []
+    for defender in inventory.defenders:
+        series.append((f"defender_{defender.seed}/bob", defender.validation_history, "bob"))
+        series.append((f"defender_{defender.seed}/training_eve", defender.validation_history, "training_eve"))
+        for attacker in defender.attackers:
+            series.append((f"D{defender.seed}/{attacker.path.name}", attacker.validation_history, "eve"))
+    if not any(history for _, history, _ in series):
+        return False
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4), constrained_layout=True)
+    for label, history, model_key in series:
+        usable = [row for row in history if isinstance(row.get(model_key), dict)]
+        for axis, metric in zip(axes, METRIC_NAMES):
+            axis.plot(
+                [row.get("step") for row in usable],
+                [row[model_key].get(metric) for row in usable],
+                label=label,
+                linewidth=1.4,
+            )
+            axis.set(title=metric.replace("_", " ").title(), xlabel="Saved validation step", ylabel="Validation value")
+    axes[0].legend(fontsize=6, frameon=False)
+    fig.suptitle("Validation histories only (not final-test metrics)")
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+    return True
+
+
+def write_analysis(root: Path, output: Path) -> dict[str, Any]:
+    """Write analysis artifacts to a new directory while leaving ``root`` untouched."""
+
+    root, output = Path(root), Path(output)
+    if output.exists():
+        raise FileExistsError(f"Analysis output already exists: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}-", dir=output.parent))
+    try:
+        inventory = discover_runs(root)
+        pairs = pair_attackers(inventory)
+        summary = summarize_pairs(pairs)
+        result = {
+            "input_root": str(root.resolve()),
+            "defender_count": len(inventory.defenders),
+            "attacker_count": sum(len(defender.attackers) for defender in inventory.defenders),
+            "pair_count": len(pairs),
+            "issues": [issue.as_dict() for issue in inventory.issues],
+            "summary": summary,
+        }
+        (temporary / "analysis_summary.json").write_text(json.dumps(result, indent=2) + "\n")
+        rows = _comparison_rows(pairs)
+        comparison_fields = list(rows[0]) if rows else ["defender_seed", "attacker_seed"]
+        _write_csv(temporary / "comparison.csv", rows, comparison_fields)
+        _write_markdown(temporary / "comparison.md", rows)
+        aggregate_rows = [
+            {
+                "defender_seed": row["defender_seed"],
+                "pair_count": row["pair_count"],
+                **{f"mean_difference_{name}": value for name, value in row["mean_differences"].items()},
+            }
+            for row in summary["defender_aggregates"]
+        ]
+        aggregate_fields = list(aggregate_rows[0]) if aggregate_rows else ["defender_seed", "pair_count"]
+        _write_csv(temporary / "defender_aggregates.csv", aggregate_rows, aggregate_fields)
+        if pairs:
+            _plot_final_metrics(pairs, temporary / "final_test_comparison.png")
+            _plot_differences(pairs, temporary / "paired_differences.png")
+        _plot_validation(inventory, temporary / "validation_curves.png")
+        os.rename(temporary, output)
+        return result
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", required=True, type=Path, help="Saved experiment root containing defender_<seed> directories")
+    parser.add_argument("--output", required=True, type=Path, help="New directory for generated analysis artifacts")
+    args = parser.parse_args()
+    result = write_analysis(args.root, args.output)
+    noun = "pair" if result["pair_count"] == 1 else "pairs"
+    print(f"Wrote {result['pair_count']} valid baseline/wider {noun} to {args.output}")
+    if result["issues"]:
+        print(f"Recorded {len(result['issues'])} incomplete or invalid artifact issue(s).")
+
+
+if __name__ == "__main__":
+    main()
