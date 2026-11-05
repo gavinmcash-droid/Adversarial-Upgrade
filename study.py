@@ -10,6 +10,8 @@ import traceback
 import urllib.request
 import venv
 
+from anc.config import validate_config
+
 PROJECT = Path(__file__).resolve().parent
 PYTHON = PROJECT / '.venv/bin/python'
 
@@ -57,7 +59,7 @@ def require_complete(root, cfg, attackers=False):
 def workflow(root, config):
     if not PYTHON.exists():
         raise RuntimeError('Run python3 study.py setup first')
-    cfg = json.loads(config.read_text())
+    cfg = validate_config(json.loads(config.read_text()))
     root.mkdir(parents=True, exist_ok=False)
     saved_config = root / 'config.json'
     saved_config.write_text(json.dumps(cfg, indent=2) + '\n')
