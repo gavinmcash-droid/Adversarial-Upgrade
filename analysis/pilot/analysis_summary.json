@@ -1,0 +1,77 @@
+{
+  "input_root": "/mnt/c/Users/squid/Software dev/Adversarial-Upgrade/reports/pilot",
+  "defender_count": 1,
+  "attacker_count": 2,
+  "pair_count": 1,
+  "issues": [],
+  "summary": {
+    "per_seed": [
+      {
+        "defender_seed": 101,
+        "attacker_seed": 201,
+        "baseline": {
+          "normalized_l1": 0.22798165678977966,
+          "bit_error_rate": 0.209197998046875,
+          "message_accuracy": 0.019775390625,
+          "seconds": 3.1179855679997672,
+          "parameters": 599
+        },
+        "wider": {
+          "normalized_l1": 0.19751989841461182,
+          "bit_error_rate": 0.1890411376953125,
+          "message_accuracy": 0.031494140625,
+          "seconds": 3.5300065400001586,
+          "parameters": 717
+        },
+        "differences": {
+          "normalized_l1": -0.030461758375167847,
+          "bit_error_rate": -0.0201568603515625,
+          "message_accuracy": 0.01171875,
+          "seconds": 0.41202097200039134,
+          "parameters": 118
+        }
+      }
+    ],
+    "defender_aggregates": [
+      {
+        "defender_seed": 101,
+        "pair_count": 1,
+        "mean_differences": {
+          "normalized_l1": -0.030461758375167847,
+          "bit_error_rate": -0.0201568603515625,
+          "message_accuracy": 0.01171875,
+          "seconds": 0.41202097200039134,
+          "parameters": 118.0
+        }
+      }
+    ],
+    "overall": {
+      "normalized_l1": {
+        "mean": -0.030461758375167847,
+        "min": -0.030461758375167847,
+        "max": -0.030461758375167847
+      },
+      "bit_error_rate": {
+        "mean": -0.0201568603515625,
+        "min": -0.0201568603515625,
+        "max": -0.0201568603515625
+      },
+      "message_accuracy": {
+        "mean": 0.01171875,
+        "min": 0.01171875,
+        "max": 0.01171875
+      },
+      "seconds": {
+        "mean": 0.41202097200039134,
+        "min": 0.41202097200039134,
+        "max": 0.41202097200039134
+      },
+      "parameters": {
+        "mean": 118.0,
+        "min": 118.0,
+        "max": 118.0
+      }
+    },
+    "caveat": "Descriptive comparison across 1 defender seed(s); do not claim statistical significance, and do not treat attacker initializations as independent defenders."
+  }
+}
