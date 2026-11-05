@@ -189,6 +189,28 @@ def test_missing_expected_architecture_is_reported(tmp_path):
     assert pair_attackers(inventory) == []
 
 
+def test_empty_history_is_reported_instead_of_silently_excluded(tmp_path):
+    _make_study(tmp_path, attacker_seeds=(11,))
+    (tmp_path / "defender_1/attack_baseline_11/history.jsonl").write_text("")
+
+    inventory = discover_runs(tmp_path)
+
+    assert "empty_history" in {issue.code for issue in inventory.issues}
+    assert pair_attackers(inventory) == []
+
+
+def test_attacker_metadata_seed_must_match_directory_seed(tmp_path):
+    _make_study(tmp_path)
+    metadata = json.loads((tmp_path / "defender_1/attack_wider_11/metadata.json").read_text())
+    metadata["seed"] = 999
+    _write(tmp_path / "defender_1/attack_wider_11/metadata.json", metadata)
+
+    inventory = discover_runs(tmp_path)
+
+    assert "attacker_metadata_mismatch" in {issue.code for issue in inventory.issues}
+    assert [(pair.defender_seed, pair.attacker_seed) for pair in pair_attackers(inventory)] == [(1, 12)]
+
+
 def _snapshot_tree(root: Path) -> dict[str, tuple[bytes, int]]:
     return {
         str(path.relative_to(root)): (path.read_bytes(), path.stat().st_mtime_ns)
@@ -224,6 +246,8 @@ def test_write_analysis_creates_tables_plots_and_keeps_input_read_only(tmp_path)
     csv_text = (output / "comparison.csv").read_text()
     assert "difference_bit_error_rate" in csv_text
     assert "-0.1" in csv_text
+    assert b"\r\n" not in (output / "comparison.csv").read_bytes()
+    assert b"\r\n" not in (output / "defender_aggregates.csv").read_bytes()
     assert "Wider minus baseline" in (output / "comparison.md").read_text()
     for name in ("final_test_comparison.png", "paired_differences.png", "validation_curves.png"):
         assert (output / name).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")

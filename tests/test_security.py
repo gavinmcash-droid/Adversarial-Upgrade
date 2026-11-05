@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -130,12 +131,13 @@ def _checkpoint_run(root: Path) -> Path:
     _write_json(defender / "status.json", {"status": "complete", "updates": 5})
     alice, bob = Keyed(), Keyed()
     torch.save({"alice": alice.state_dict(), "bob": bob.state_dict(), "step": 5}, defender / "best.pt")
+    defender_hash = hashlib.sha256((defender / "best.pt").read_bytes()).hexdigest()
     for architecture, channels in (("baseline", BASE), ("wider", WIDE)):
         attack = defender / f"attack_{architecture}_41"
         attack.mkdir()
         _write_json(attack / "metadata.json", {"seed": 41, "stage": "attack", "config": config})
         _write_json(attack / "status.json", {"status": "complete", "updates": 5})
-        _write_json(attack / "parent.json", {"channels": list(channels), "checkpoint_sha256": "test"})
+        _write_json(attack / "parent.json", {"channels": list(channels), "checkpoint_sha256": defender_hash})
         eve = Eve(channels)
         torch.save({"eve": eve.state_dict(), "step": 5}, attack / "best.pt")
     _write_json(defender / "test_results.json", {"reserved": "must remain unchanged"})
@@ -222,3 +224,33 @@ def test_security_module_cli_reports_unavailable_checkpoint(tmp_path):
 
     assert "unavailable" in completed.stdout.lower()
     assert output.joinpath("security_report.json").is_file()
+
+
+def test_security_skips_attacker_trained_against_another_defender(tmp_path):
+    defender = _checkpoint_run(tmp_path / "study")
+    parent_path = defender / "attack_wider_41/parent.json"
+    parent = json.loads(parent_path.read_text())
+    parent["checkpoint_sha256"] = "wrong-defender"
+    _write_json(parent_path, parent)
+
+    report = evaluate_security(defender, tmp_path / "security", samples=4)
+
+    assert report["status"] == "partial"
+    assert "attack_baseline_41" in report["reconstruction"]
+    assert "attack_wider_41" not in report["reconstruction"]
+    assert any("different defender checkpoint" in limitation for limitation in report["limitations"])
+
+
+def test_security_without_eve_checkpoint_is_partial_not_complete(tmp_path):
+    defender = tmp_path / "defender_7"
+    defender.mkdir()
+    _write_json(defender / "metadata.json", {"seed": 7, "stage": "defender", "config": {}})
+    torch.manual_seed(7)
+    alice, bob = Keyed(), Keyed()
+    torch.save({"alice": alice.state_dict(), "bob": bob.state_dict()}, defender / "best.pt")
+
+    report = evaluate_security(defender, tmp_path / "security", samples=4)
+
+    assert report["status"] == "partial"
+    assert set(report["reconstruction"]) == {"bob_with_key", "random_guess"}
+    assert any("No complete attacker checkpoints" in limitation for limitation in report["limitations"])

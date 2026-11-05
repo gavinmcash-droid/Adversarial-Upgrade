@@ -150,6 +150,8 @@ def _read_jsonl(path: Path, issues: list[AnalysisIssue]) -> list[dict[str, Any]]
             _issue(issues, "malformed_jsonl", path, f"Line {line_number} is not an object")
             return []
         rows.append(row)
+    if not rows:
+        _issue(issues, "empty_history", path, "Validation history contains no records")
     return rows
 
 
@@ -183,8 +185,13 @@ def _discover_attacker(
     config = metadata.get("config") if isinstance(metadata.get("config"), dict) else {}
     valid = bool(metadata and status and parent and history and final)
 
-    if metadata and metadata.get("stage") != "attack":
-        _issue(issues, "stage_mismatch", path / "metadata.json", "Expected attack-stage metadata")
+    if metadata and (metadata.get("stage") != "attack" or metadata.get("seed") != seed):
+        _issue(
+            issues,
+            "attacker_metadata_mismatch",
+            path / "metadata.json",
+            "Attacker identity or stage is inconsistent with its directory",
+        )
         valid = False
     if config != defender.config:
         _issue(issues, "config_mismatch", path / "metadata.json", "Attacker config differs from defender config")
@@ -368,7 +375,7 @@ def _comparison_rows(pairs: list[ComparisonPair]) -> list[dict[str, Any]]:
 
 def _write_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
     with path.open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 

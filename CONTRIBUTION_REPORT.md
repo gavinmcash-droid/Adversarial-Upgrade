@@ -80,7 +80,7 @@ Final verification command:
 MPLCONFIGDIR=/tmp/anc-mpl .venv/bin/python -m pytest -q
 ```
 
-The final suite contains 57 tests. New coverage includes:
+The final suite contains 61 tests. New coverage includes:
 
 - literal metric and paired-difference calculations;
 - defender-level aggregation and the single-defender significance caveat;

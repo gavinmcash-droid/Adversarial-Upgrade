@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -166,7 +167,11 @@ def _load_defender_checkpoint(path: Path) -> tuple[Keyed, Keyed]:
     return alice, bob
 
 
-def _load_attackers(defender: Path, limitations: list[str]) -> list[tuple[str, Eve]]:
+def _load_attackers(
+    defender: Path,
+    defender_hash: str,
+    limitations: list[str],
+) -> list[tuple[str, Eve]]:
     loaded: list[tuple[str, Eve]] = []
     for path in sorted(defender.glob("attack_*")):
         if not path.is_dir():
@@ -177,6 +182,9 @@ def _load_attackers(defender: Path, limitations: list[str]) -> list[tuple[str, E
             parent = _read_json(path / "parent.json")
             if status.get("status") != "complete":
                 limitations.append(f"Skipped {path.name}: status is not complete")
+                continue
+            if parent.get("checkpoint_sha256") != defender_hash:
+                limitations.append(f"Skipped {path.name}: trained against a different defender checkpoint")
                 continue
             if not checkpoint.is_file():
                 limitations.append(f"Skipped {path.name}: missing {checkpoint.name}")
@@ -310,7 +318,10 @@ def evaluate_security(defender: Path, output: Path, samples: int = 1024) -> dict
             }
             return _finish_output(temporary, output, report)
 
-        attackers = _load_attackers(defender, limitations)
+        defender_hash = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+        attackers = _load_attackers(defender, defender_hash, limitations)
+        if not attackers:
+            limitations.append("No complete attacker checkpoints were available for keyless plaintext recovery")
         plaintext, key = diagnostic_sample(seed, samples)
         alternative_key = _alternative_key(seed, samples)
         with torch.no_grad():
