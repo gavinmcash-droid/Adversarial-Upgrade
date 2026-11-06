@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pickle
+import re
 import shutil
 import tempfile
 from typing import Any
@@ -19,9 +21,13 @@ from typing import Any
 import torch
 
 from .core import Eve, Keyed, freeze, generator, metrics, sample, stream_seed
+from .config import ConfigError, validate_config
+from .paths import require_external_output
 
 
 Encryptor = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+ATTACK_PATTERN = re.compile(r"attack_(baseline|wider)_(\d+)$")
+DEFENDER_PATTERN = re.compile(r"defender_(\d+)$")
 
 
 def _positive_size(size: int) -> None:
@@ -155,10 +161,13 @@ def _alternative_key(seed: int, size: int) -> torch.Tensor:
     return key
 
 
-def _load_defender_checkpoint(path: Path) -> tuple[Keyed, Keyed]:
+def _load_defender_checkpoint(path: Path, expected_step: int) -> tuple[Keyed, Keyed]:
     state = torch.load(path, weights_only=True)
     if not isinstance(state, dict) or "alice" not in state or "bob" not in state:
         raise ValueError("Defender checkpoint must contain alice and bob state dictionaries")
+    step = state.get("step")
+    if isinstance(step, bool) or not isinstance(step, int) or not 0 <= step <= expected_step:
+        raise ValueError("defender checkpoint step differs from the permitted completed-budget range")
     alice, bob = Keyed(), Keyed()
     alice.load_state_dict(state["alice"])
     bob.load_state_dict(state["bob"])
@@ -169,6 +178,8 @@ def _load_defender_checkpoint(path: Path) -> tuple[Keyed, Keyed]:
 
 def _load_attackers(
     defender: Path,
+    defender_seed: int,
+    defender_config: dict[str, Any],
     defender_hash: str,
     limitations: list[str],
 ) -> list[tuple[str, Eve]]:
@@ -178,28 +189,73 @@ def _load_attackers(
             continue
         checkpoint = path / "best.pt"
         try:
+            match = ATTACK_PATTERN.fullmatch(path.name)
+            if match is None:
+                raise ValueError("directory name has an invalid attacker identity")
+            architecture, seed_text = match.groups()
+            attacker_seed = int(seed_text)
+            metadata = _read_json(path / "metadata.json")
             status = _read_json(path / "status.json")
             parent = _read_json(path / "parent.json")
+            if metadata.get("stage") != "attack" or metadata.get("seed") != attacker_seed:
+                raise ValueError("metadata identity differs from the attacker directory")
+            if metadata.get("config") != defender_config:
+                raise ValueError("attacker configuration differs from the defender configuration")
+            configured_seeds = defender_config.get("attacker_seeds")
+            if not isinstance(configured_seeds, list) or attacker_seed not in configured_seeds:
+                raise ValueError("attacker seed is not configured for this defender")
             if status.get("status") != "complete":
                 limitations.append(f"Skipped {path.name}: status is not complete")
                 continue
+            expected_updates = defender_config.get("attacker_updates")
+            if isinstance(expected_updates, bool) or not isinstance(expected_updates, int) or expected_updates <= 0:
+                raise ValueError("configured attacker update budget is not a positive integer")
+            completed_updates = status.get("updates")
+            if (
+                isinstance(completed_updates, bool)
+                or not isinstance(completed_updates, int)
+                or completed_updates != expected_updates
+            ):
+                raise ValueError("attacker update budget differs from the configured budget")
             if parent.get("checkpoint_sha256") != defender_hash:
                 limitations.append(f"Skipped {path.name}: trained against a different defender checkpoint")
                 continue
+            expected_channels = defender_config.get(f"{architecture}_channels")
+            if parent.get("channels") != expected_channels:
+                raise ValueError("attacker channels differ from the configured architecture")
+            if parent.get("data_stream_seed") != stream_seed(defender_seed, "attacker_train"):
+                raise ValueError("attacker training stream differs from the expected defender stream")
             if not checkpoint.is_file():
                 limitations.append(f"Skipped {path.name}: missing {checkpoint.name}")
                 continue
             channels = parent.get("channels")
-            if not isinstance(channels, list) or len(channels) != 4:
+            if (
+                not isinstance(channels, list)
+                or len(channels) != 4
+                or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in channels)
+                or channels[-1] != 1
+            ):
                 raise ValueError("parent.json has invalid channels")
             state = torch.load(checkpoint, weights_only=True)
             if not isinstance(state, dict) or "eve" not in state:
                 raise ValueError("checkpoint has no Eve state dictionary")
+            step = state.get("step")
+            if isinstance(step, bool) or not isinstance(step, int) or not 0 <= step <= expected_updates:
+                raise ValueError("attacker checkpoint step differs from the permitted completed-budget range")
             eve = Eve(tuple(int(value) for value in channels))
             eve.load_state_dict(state["eve"])
             freeze(eve)
             loaded.append((path.name, eve))
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, RuntimeError) as error:
+        except (
+            OSError,
+            EOFError,
+            pickle.UnpicklingError,
+            ValueError,
+            TypeError,
+            KeyError,
+            json.JSONDecodeError,
+            RuntimeError,
+        ) as error:
             limitations.append(f"Skipped {path.name}: {error}")
     return loaded
 
@@ -272,6 +328,7 @@ def evaluate_security(defender: Path, output: Path, samples: int = 1024) -> dict
 
     _positive_size(samples)
     defender, output = Path(defender), Path(output)
+    require_external_output(defender, output)
     if output.exists():
         raise FileExistsError(f"Security output already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -287,6 +344,12 @@ def evaluate_security(defender: Path, output: Path, samples: int = 1024) -> dict
             seed = metadata.get("seed")
             if isinstance(seed, bool) or not isinstance(seed, int):
                 raise ValueError("metadata seed must be an integer")
+            match = DEFENDER_PATTERN.fullmatch(defender.name)
+            if metadata.get("stage") != "defender" or match is None or int(match.group(1)) != seed:
+                raise ValueError("defender metadata identity differs from its directory")
+            config = metadata.get("config")
+            if not isinstance(config, dict):
+                raise ValueError("defender metadata config must be an object")
         except (OSError, ValueError, json.JSONDecodeError) as error:
             report = {
                 "status": "unavailable",
@@ -307,8 +370,34 @@ def evaluate_security(defender: Path, output: Path, samples: int = 1024) -> dict
             }
             return _finish_output(temporary, output, report)
         try:
-            alice, bob = _load_defender_checkpoint(checkpoint)
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+            try:
+                config = validate_config(config)
+            except ConfigError as error:
+                raise ValueError(f"defender configuration is invalid: {error}") from error
+            status = _read_json(defender / "status.json")
+            expected_updates = config.get("defender_updates")
+            completed_updates = status.get("updates")
+            if (
+                status.get("status") != "complete"
+                or isinstance(completed_updates, bool)
+                or not isinstance(completed_updates, int)
+                or completed_updates != expected_updates
+            ):
+                raise ValueError("defender status or update budget differs from its configuration")
+            if isinstance(expected_updates, bool) or not isinstance(expected_updates, int) or expected_updates <= 0:
+                raise ValueError("defender update budget must be a positive integer")
+            alice, bob = _load_defender_checkpoint(checkpoint, expected_updates)
+        except (
+            OSError,
+            EOFError,
+            pickle.UnpicklingError,
+            ConfigError,
+            ValueError,
+            TypeError,
+            KeyError,
+            json.JSONDecodeError,
+            RuntimeError,
+        ) as error:
             report = {
                 "status": "unavailable",
                 "defender_seed": seed,
@@ -319,7 +408,7 @@ def evaluate_security(defender: Path, output: Path, samples: int = 1024) -> dict
             return _finish_output(temporary, output, report)
 
         defender_hash = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
-        attackers = _load_attackers(defender, defender_hash, limitations)
+        attackers = _load_attackers(defender, seed, config, defender_hash, limitations)
         if not attackers:
             limitations.append("No complete attacker checkpoints were available for keyless plaintext recovery")
         plaintext, key = diagnostic_sample(seed, samples)

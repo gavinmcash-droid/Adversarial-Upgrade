@@ -117,13 +117,35 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value) + "\n")
 
 
+def _snapshot_structure(root: Path) -> list[tuple[str, bool, bytes | None, int | None]]:
+    return [
+        (
+            str(path.relative_to(root)),
+            path.is_dir(),
+            None if path.is_dir() else path.read_bytes(),
+            None if path.is_dir() else path.stat().st_mtime_ns,
+        )
+        for path in sorted(root.rglob("*"))
+    ]
+
+
 def _checkpoint_run(root: Path) -> Path:
     torch.manual_seed(123)
     defender = root / "defender_31"
     defender.mkdir(parents=True)
     config = {
+        "defender_seeds": [31],
         "attacker_seeds": [41],
+        "defender_updates": 5,
         "attacker_updates": 5,
+        "batch_size": 8,
+        "validation_size": 16,
+        "test_size": 32,
+        "validate_every": 1,
+        "learning_rate": 0.001,
+        "threads": 1,
+        "defender_seconds": 60,
+        "attacker_seconds": 30,
         "baseline_channels": list(BASE),
         "wider_channels": list(WIDE),
     }
@@ -137,7 +159,14 @@ def _checkpoint_run(root: Path) -> Path:
         attack.mkdir()
         _write_json(attack / "metadata.json", {"seed": 41, "stage": "attack", "config": config})
         _write_json(attack / "status.json", {"status": "complete", "updates": 5})
-        _write_json(attack / "parent.json", {"channels": list(channels), "checkpoint_sha256": defender_hash})
+        _write_json(
+            attack / "parent.json",
+            {
+                "channels": list(channels),
+                "checkpoint_sha256": defender_hash,
+                "data_stream_seed": stream_seed(31, "attacker_train"),
+            },
+        )
         eve = Eve(channels)
         torch.save({"eve": eve.state_dict(), "step": 5}, attack / "best.pt")
     _write_json(defender / "test_results.json", {"reserved": "must remain unchanged"})
@@ -226,6 +255,18 @@ def test_security_module_cli_reports_unavailable_checkpoint(tmp_path):
     assert output.joinpath("security_report.json").is_file()
 
 
+def test_security_rejects_output_nested_inside_defender_before_mutation(tmp_path):
+    defender = _checkpoint_run(tmp_path / "study")
+    output = defender / "derived" / "security"
+    before = _snapshot_structure(defender)
+
+    with pytest.raises(ValueError, match="inside the input"):
+        evaluate_security(defender, output, samples=4)
+
+    assert _snapshot_structure(defender) == before
+    assert not output.parent.exists()
+
+
 def test_security_skips_attacker_trained_against_another_defender(tmp_path):
     defender = _checkpoint_run(tmp_path / "study")
     parent_path = defender / "attack_wider_41/parent.json"
@@ -244,13 +285,181 @@ def test_security_skips_attacker_trained_against_another_defender(tmp_path):
 def test_security_without_eve_checkpoint_is_partial_not_complete(tmp_path):
     defender = tmp_path / "defender_7"
     defender.mkdir()
-    _write_json(defender / "metadata.json", {"seed": 7, "stage": "defender", "config": {}})
+    config = {
+        "defender_seeds": [7],
+        "attacker_seeds": [9],
+        "defender_updates": 1,
+        "attacker_updates": 1,
+        "batch_size": 8,
+        "validation_size": 16,
+        "test_size": 32,
+        "validate_every": 1,
+        "learning_rate": 0.001,
+        "threads": 1,
+        "defender_seconds": 60,
+        "attacker_seconds": 30,
+        "baseline_channels": list(BASE),
+        "wider_channels": list(WIDE),
+    }
+    _write_json(defender / "metadata.json", {"seed": 7, "stage": "defender", "config": config})
+    _write_json(defender / "status.json", {"status": "complete", "updates": 1})
     torch.manual_seed(7)
     alice, bob = Keyed(), Keyed()
-    torch.save({"alice": alice.state_dict(), "bob": bob.state_dict()}, defender / "best.pt")
+    torch.save({"alice": alice.state_dict(), "bob": bob.state_dict(), "step": 1}, defender / "best.pt")
 
     report = evaluate_security(defender, tmp_path / "security", samples=4)
 
     assert report["status"] == "partial"
     assert set(report["reconstruction"]) == {"bob_with_key", "random_guess"}
     assert any("No complete attacker checkpoints" in limitation for limitation in report["limitations"])
+
+
+@pytest.mark.parametrize(
+    ("case", "limitation_fragment"),
+    [
+        ("metadata_seed", "metadata identity"),
+        ("metadata_stage", "metadata identity"),
+        ("metadata_config", "configuration differs"),
+        ("unconfigured_seed", "not configured"),
+        ("channels", "channels differ"),
+        ("stream", "training stream differs"),
+        ("budget", "update budget differs"),
+        ("checkpoint_step", "checkpoint step differs"),
+    ],
+)
+def test_security_skips_attackers_with_invalid_provenance(tmp_path, case, limitation_fragment):
+    defender = _checkpoint_run(tmp_path / "study")
+    attack = defender / "attack_wider_41"
+    if case.startswith("metadata_"):
+        metadata_path = attack / "metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        if case == "metadata_seed":
+            metadata["seed"] = 999
+        elif case == "metadata_stage":
+            metadata["stage"] = "defender"
+        else:
+            metadata["config"] = {}
+        _write_json(metadata_path, metadata)
+    elif case == "unconfigured_seed":
+        renamed = defender / "attack_wider_99"
+        attack.rename(renamed)
+        attack = renamed
+        metadata_path = attack / "metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["seed"] = 99
+        _write_json(metadata_path, metadata)
+    elif case in {"channels", "stream"}:
+        parent_path = attack / "parent.json"
+        parent = json.loads(parent_path.read_text())
+        if case == "channels":
+            parent["channels"] = [9, 9, 9, 1]
+        else:
+            parent["data_stream_seed"] = 999
+        _write_json(parent_path, parent)
+    elif case == "budget":
+        status_path = attack / "status.json"
+        status = json.loads(status_path.read_text())
+        status["updates"] = 4
+        _write_json(status_path, status)
+    else:
+        checkpoint_path = attack / "best.pt"
+        state = torch.load(checkpoint_path, weights_only=True)
+        state["step"] = 6
+        torch.save(state, checkpoint_path)
+
+    report = evaluate_security(defender, tmp_path / "security", samples=4)
+
+    assert report["status"] == "partial"
+    assert "attack_baseline_41" in report["reconstruction"]
+    assert not any(name.startswith("attack_wider_") for name in report["reconstruction"])
+    assert any(limitation_fragment in limitation for limitation in report["limitations"])
+
+
+def test_security_rejects_invalid_defender_identity_and_checkpoint_step(tmp_path):
+    defender = _checkpoint_run(tmp_path / "study")
+    metadata_path = defender / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["stage"] = "attack"
+    _write_json(metadata_path, metadata)
+
+    report = evaluate_security(defender, tmp_path / "security", samples=4)
+
+    assert report["status"] == "unavailable"
+    assert any("metadata" in limitation for limitation in report["limitations"])
+
+    valid_defender = _checkpoint_run(tmp_path / "other-study")
+    checkpoint_path = valid_defender / "best.pt"
+    state = torch.load(checkpoint_path, weights_only=True)
+    state["step"] = 6
+    torch.save(state, checkpoint_path)
+
+    report = evaluate_security(valid_defender, tmp_path / "other-security", samples=4)
+
+    assert report["status"] == "unavailable"
+    assert any("checkpoint step" in limitation for limitation in report["limitations"])
+
+
+def test_security_accepts_validation_selected_checkpoints_before_final_budget(tmp_path):
+    defender = _checkpoint_run(tmp_path / "study")
+    defender_checkpoint = defender / "best.pt"
+    defender_state = torch.load(defender_checkpoint, weights_only=True)
+    defender_state["step"] = 2
+    torch.save(defender_state, defender_checkpoint)
+    defender_hash = hashlib.sha256(defender_checkpoint.read_bytes()).hexdigest()
+    for parent_path in defender.glob("attack_*/parent.json"):
+        parent = json.loads(parent_path.read_text())
+        parent["checkpoint_sha256"] = defender_hash
+        _write_json(parent_path, parent)
+    attacker_checkpoint = defender / "attack_wider_41/best.pt"
+    attacker_state = torch.load(attacker_checkpoint, weights_only=True)
+    attacker_state["step"] = 3
+    torch.save(attacker_state, attacker_checkpoint)
+
+    report = evaluate_security(defender, tmp_path / "security", samples=4)
+
+    assert report["status"] == "complete"
+    assert "attack_baseline_41" in report["reconstruction"]
+    assert "attack_wider_41" in report["reconstruction"]
+
+
+def test_security_rejects_missing_required_configuration_budget(tmp_path):
+    defender = _checkpoint_run(tmp_path / "study")
+    for metadata_path in [defender / "metadata.json", *defender.glob("attack_*/metadata.json")]:
+        metadata = json.loads(metadata_path.read_text())
+        metadata["config"].pop("attacker_updates")
+        _write_json(metadata_path, metadata)
+    for status_path in defender.glob("attack_*/status.json"):
+        status = json.loads(status_path.read_text())
+        status.pop("updates")
+        _write_json(status_path, status)
+    for checkpoint_path in defender.glob("attack_*/best.pt"):
+        state = torch.load(checkpoint_path, weights_only=True)
+        state.pop("step")
+        torch.save(state, checkpoint_path)
+
+    report = evaluate_security(defender, tmp_path / "security", samples=4)
+
+    assert report["status"] == "unavailable"
+    assert any("configuration" in limitation for limitation in report["limitations"])
+
+
+def test_security_reports_corrupt_defender_checkpoint_as_unavailable(tmp_path):
+    defender = _checkpoint_run(tmp_path / "study")
+    (defender / "best.pt").write_bytes(b"not a checkpoint")
+
+    report = evaluate_security(defender, tmp_path / "security", samples=4)
+
+    assert report["status"] == "unavailable"
+    assert any("Cannot load trained defender checkpoint" in limitation for limitation in report["limitations"])
+
+
+def test_security_skips_corrupt_attacker_checkpoint_and_keeps_valid_peer(tmp_path):
+    defender = _checkpoint_run(tmp_path / "study")
+    (defender / "attack_wider_41/best.pt").write_bytes(b"not a checkpoint")
+
+    report = evaluate_security(defender, tmp_path / "security", samples=4)
+
+    assert report["status"] == "partial"
+    assert "attack_baseline_41" in report["reconstruction"]
+    assert "attack_wider_41" not in report["reconstruction"]
+    assert any("attack_wider_41" in limitation for limitation in report["limitations"])

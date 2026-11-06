@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
 import pytest
 
 from anc.analysis import discover_runs, pair_attackers, summarize_pairs, write_analysis
+from anc.core import stream_seed
 
 
 METRICS = ("normalized_l1", "bit_error_rate", "message_accuracy")
@@ -36,6 +38,7 @@ def _config(attacker_seeds=(11, 12)) -> dict:
 
 def _make_study(root: Path, attacker_seeds=(11, 12)) -> Path:
     cfg = _config(attacker_seeds)
+    defender_hash = "d" * 64
     defender = root / "defender_1"
     defender.mkdir(parents=True)
     _write(defender / "metadata.json", {"config": cfg, "seed": 1, "stage": "defender"})
@@ -73,9 +76,9 @@ def _make_study(root: Path, attacker_seeds=(11, 12)) -> Path:
             _write(
                 attack / "parent.json",
                 {
-                    "checkpoint_sha256": "defender-hash",
+                    "checkpoint_sha256": defender_hash,
                     "channels": cfg[f"{architecture}_channels"],
-                    "data_stream_seed": 12345,
+                    "data_stream_seed": stream_seed(1, "attacker_train"),
                 },
             )
             _write(
@@ -93,7 +96,17 @@ def _make_study(root: Path, attacker_seeds=(11, 12)) -> Path:
             }
     _write(
         defender / "test_results.json",
-        {"metrics": final_metrics, "examples": 32, "defender_hash": "defender-hash"},
+        {
+            "metrics": final_metrics,
+            "examples": 32,
+            "test_seed": stream_seed(1, "final_test"),
+            "checkpoint_hashes": {
+                f"attack_{architecture}_{seed}": ("a" if architecture == "baseline" else "b") * 64
+                for architecture in ("baseline", "wider")
+                for seed in attacker_seeds
+            },
+            "defender_hash": defender_hash,
+        },
     )
     return defender
 
@@ -211,12 +224,151 @@ def test_attacker_metadata_seed_must_match_directory_seed(tmp_path):
     assert [(pair.defender_seed, pair.attacker_seed) for pair in pair_attackers(inventory)] == [(1, 12)]
 
 
+@pytest.mark.parametrize("metric", [float("nan"), float("inf"), -0.01, 1.01, 10**400])
+def test_nonfinite_or_out_of_range_final_metric_is_rejected(tmp_path, metric):
+    defender = _make_study(tmp_path, attacker_seeds=(11,))
+    results_path = defender / "test_results.json"
+    results = json.loads(results_path.read_text())
+    results["metrics"]["attack_baseline_11"]["bit_error_rate"] = metric
+    _write(results_path, results)
+
+    inventory = discover_runs(tmp_path)
+
+    assert "invalid_final_metrics" in {issue.code for issue in inventory.issues}
+    assert pair_attackers(inventory) == []
+
+
+def test_structurally_invalid_history_row_is_rejected(tmp_path):
+    defender = _make_study(tmp_path, attacker_seeds=(11,))
+    (defender / "attack_baseline_11/history.jsonl").write_text("{}\n")
+
+    inventory = discover_runs(tmp_path)
+
+    assert "invalid_history" in {issue.code for issue in inventory.issues}
+    assert pair_attackers(inventory) == []
+
+
+def test_unconfigured_attacker_seed_is_reported_and_excluded(tmp_path):
+    defender = _make_study(tmp_path, attacker_seeds=(11,))
+    results_path = defender / "test_results.json"
+    results = json.loads(results_path.read_text())
+    for architecture in ("baseline", "wider"):
+        source = defender / f"attack_{architecture}_11"
+        target = defender / f"attack_{architecture}_99"
+        shutil.copytree(source, target)
+        metadata_path = target / "metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["seed"] = 99
+        _write(metadata_path, metadata)
+        results["metrics"][target.name] = dict(results["metrics"][source.name])
+        results["checkpoint_hashes"][target.name] = "9" * 64
+    _write(results_path, results)
+
+    inventory = discover_runs(tmp_path)
+
+    assert "unconfigured_attacker" in {issue.code for issue in inventory.issues}
+    assert [(pair.defender_seed, pair.attacker_seed) for pair in pair_attackers(inventory)] == [(1, 11)]
+
+
+def test_attackers_must_use_expected_defender_training_stream(tmp_path):
+    defender = _make_study(tmp_path, attacker_seeds=(11,))
+    for architecture in ("baseline", "wider"):
+        parent_path = defender / f"attack_{architecture}_11/parent.json"
+        parent = json.loads(parent_path.read_text())
+        parent["data_stream_seed"] = 999
+        _write(parent_path, parent)
+
+    inventory = discover_runs(tmp_path)
+
+    assert "stream_mismatch" in {issue.code for issue in inventory.issues}
+    assert pair_attackers(inventory) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("examples", 31), ("test_seed", 999)],
+)
+def test_final_test_size_and_seed_must_match_defender_config(tmp_path, field, value):
+    defender = _make_study(tmp_path, attacker_seeds=(11,))
+    results_path = defender / "test_results.json"
+    results = json.loads(results_path.read_text())
+    results[field] = value
+    _write(results_path, results)
+
+    inventory = discover_runs(tmp_path)
+
+    assert "test_provenance_mismatch" in {issue.code for issue in inventory.issues}
+    assert pair_attackers(inventory) == []
+
+
+def test_missing_config_and_result_sample_size_cannot_match_as_none(tmp_path):
+    defender = _make_study(tmp_path, attacker_seeds=(11,))
+    for metadata_path in [defender / "metadata.json", *defender.glob("attack_*/metadata.json")]:
+        metadata = json.loads(metadata_path.read_text())
+        metadata["config"].pop("test_size")
+        _write(metadata_path, metadata)
+    results_path = defender / "test_results.json"
+    results = json.loads(results_path.read_text())
+    results.pop("examples")
+    _write(results_path, results)
+
+    inventory = discover_runs(tmp_path)
+
+    assert "invalid_configuration" in {issue.code for issue in inventory.issues}
+    assert pair_attackers(inventory) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("defender_hash", None), ("defender_hash", "not-a-sha256")],
+)
+def test_defender_hash_is_required_and_well_formed(tmp_path, field, value):
+    defender = _make_study(tmp_path, attacker_seeds=(11,))
+    results_path = defender / "test_results.json"
+    results = json.loads(results_path.read_text())
+    if value is None:
+        results.pop(field)
+    else:
+        results[field] = value
+    _write(results_path, results)
+
+    inventory = discover_runs(tmp_path)
+
+    assert "invalid_checkpoint_hashes" in {issue.code for issue in inventory.issues}
+    assert pair_attackers(inventory) == []
+
+
+def test_checkpoint_hash_keys_must_cover_exactly_the_saved_attack_metrics(tmp_path):
+    defender = _make_study(tmp_path, attacker_seeds=(11,))
+    results_path = defender / "test_results.json"
+    results = json.loads(results_path.read_text())
+    results["checkpoint_hashes"].pop("attack_wider_11")
+    _write(results_path, results)
+
+    inventory = discover_runs(tmp_path)
+
+    assert "checkpoint_hash_mismatch" in {issue.code for issue in inventory.issues}
+    assert pair_attackers(inventory) == []
+
+
 def _snapshot_tree(root: Path) -> dict[str, tuple[bytes, int]]:
     return {
         str(path.relative_to(root)): (path.read_bytes(), path.stat().st_mtime_ns)
         for path in root.rglob("*")
         if path.is_file()
     }
+
+
+def _snapshot_structure(root: Path) -> list[tuple[str, bool, bytes | None, int | None]]:
+    return [
+        (
+            str(path.relative_to(root)),
+            path.is_dir(),
+            None if path.is_dir() else path.read_bytes(),
+            None if path.is_dir() else path.stat().st_mtime_ns,
+        )
+        for path in sorted(root.rglob("*"))
+    ]
 
 
 def test_write_analysis_creates_tables_plots_and_keeps_input_read_only(tmp_path):
@@ -253,6 +405,16 @@ def test_write_analysis_creates_tables_plots_and_keeps_input_read_only(tmp_path)
         assert (output / name).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
+def test_write_analysis_preserves_relative_input_label_in_saved_summary(tmp_path, monkeypatch):
+    _make_study(tmp_path / "reports" / "pilot", attacker_seeds=(11,))
+    monkeypatch.chdir(tmp_path)
+
+    write_analysis(Path("reports/pilot"), Path("analysis/pilot"))
+
+    saved = json.loads(Path("analysis/pilot/analysis_summary.json").read_text())
+    assert saved["input_root"] == "reports/pilot"
+
+
 def test_write_analysis_refuses_to_overwrite_output(tmp_path):
     study = tmp_path / "study"
     output = tmp_path / "analysis"
@@ -265,6 +427,43 @@ def test_write_analysis_refuses_to_overwrite_output(tmp_path):
         write_analysis(study, output)
 
     assert marker.read_text() == "keep"
+
+
+def test_write_analysis_rejects_output_nested_inside_input_before_mutation(tmp_path):
+    study = tmp_path / "study"
+    _make_study(study, attacker_seeds=(11,))
+    output = study / "derived" / "analysis"
+    before = _snapshot_structure(study)
+
+    with pytest.raises(ValueError, match="inside the input"):
+        write_analysis(study, output)
+
+    assert _snapshot_structure(study) == before
+    assert not output.parent.exists()
+
+
+def test_write_analysis_excludes_rejected_history_rows_from_plots(tmp_path):
+    study = tmp_path / "study"
+    output = tmp_path / "analysis"
+    defender = _make_study(study)
+    _write(
+        defender / "attack_baseline_11/history.jsonl",
+        {
+            "step": {"invalid": True},
+            "seconds": 0.0,
+            "eve": {
+                "normalized_l1": {"invalid": True},
+                "bit_error_rate": 0.5,
+                "message_accuracy": 0.0,
+            },
+        },
+    )
+
+    result = write_analysis(study, output)
+
+    assert result["pair_count"] == 1
+    assert "invalid_history" in {issue["code"] for issue in result["issues"]}
+    assert (output / "validation_curves.png").is_file()
 
 
 def test_analysis_module_cli_reports_destination(tmp_path):

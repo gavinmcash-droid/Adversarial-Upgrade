@@ -2,7 +2,7 @@
 
 ## Three-command workflow
 
-From `/home/gavinator6454/Projects/Adversarial-Upgrade`, the streamlined interface is:
+From the repository root, the streamlined interface is:
 
 ```bash
 python3 study.py setup
@@ -19,7 +19,7 @@ The wrapper copies the configuration to the run root, saves its own source, writ
 The extra original commands reflected both added research controls and an unnecessarily exposed internal workflow. This interface keeps the controls while reducing manual orchestration. It does not change architectures, objectives, data streams or checkpoints from existing experiments.
 
 
-A small, controlled Python/PyTorch student project: train Alice and Bob with a training Eve, freeze the selected defender pair, then compare fresh baseline and wider Eves. No claim of cryptographic security, novelty, or improvement over the paper. Start with [EXPERIMENT_PLAN.md](EXPERIMENT_PLAN.md) and [reports/PILOT.md](reports/PILOT.md).
+A small, controlled Python/PyTorch student project: train Alice and Bob with a training Eve, freeze the selected defender pair, then compare fresh baseline and wider Eves. No claim of cryptographic security, novelty, or improvement over the paper. Start with [EXPERIMENT_PLAN.md](EXPERIMENT_PLAN.md), [reports/PILOT.md](reports/PILOT.md), and [RESULTS_ANALYSIS.md](RESULTS_ANALYSIS.md).
 
 ## Detected environment and installation
 
@@ -28,7 +28,7 @@ Tested on Linux x86_64, Intel Core 7 150U (12 logical CPUs), 15 GiB RAM, Python 
 The project `.venv` already exists. For a new checkout on the same system, copy/paste from this folder:
 
 ```bash
-cd /home/gavinator6454/Projects/Adversarial-Upgrade
+cd /path/to/Adversarial-Upgrade
 python3 -m venv --without-pip .venv
 curl -L --fail https://bootstrap.pypa.io/get-pip.py -o /tmp/anc-get-pip.py
 .venv/bin/python /tmp/anc-get-pip.py
@@ -73,12 +73,34 @@ MPLCONFIGDIR=/tmp/anc-mpl .venv/bin/python -m anc.run plot --config configs/pilo
 
 `configs/full.json` proposes three defender seeds and three attacker initializations per architecture per defender (18 fresh Eves). **The full experiment has not been launched.** Its budgets need a resource decision first; see the runtime estimate and limitations in the pilot report. Each command requires the same configuration saved with the defender. Do not change settings after inspecting the final test set. New exploratory tuning must reserve new test seeds.
 
+## Analyze saved experiments
+
+Generate paired baseline/wider comparisons from a completed saved study without retraining or rerunning final evaluation:
+
+```bash
+MPLCONFIGDIR=/tmp/anc-mpl .venv/bin/python -m anc.analysis \
+  --root reports/pilot --output analysis/pilot-repeat
+```
+
+For a run that still contains checkpoints, generate diagnostic-stream reconstruction and ciphertext-sensitivity measurements:
+
+```bash
+MPLCONFIGDIR=/tmp/anc-mpl .venv/bin/python -m anc.security \
+  --defender runs/<study>/defender_<seed> \
+  --output analysis/<study>-defender-<seed>-security --samples 1024
+```
+
+Both commands require a new output directory outside the input experiment tree. The analyzer rejects malformed metrics, histories, budgets and available provenance fields. Archived results without checkpoints cannot cryptographically authenticate the recorded checkpoint hashes; the security command reports missing checkpoints as an explicit limitation rather than fabricating measurements. These diagnostics remain empirical attacks, not proofs of cryptographic security.
+
 ## A student's guide to the files
 
 - `anc/core.py`: a neural network is a trainable function. Alice transforms plaintext plus key into 16 real ciphertext values. Bob uses ciphertext plus key to reconstruct plaintext. Eve gets only ciphertext. Dense layers mix all inputs; convolutions apply learned local rules. The optimizer adjusts weights using error gradients. This file also defines sampling, objectives and metrics.
 - `anc/run.py`: command-line training, validation selection, loading, final evaluation, plotting and demo. The two training stages are separate. Fresh Eves cannot update the frozen defenders.
+- `anc/analysis.py`: read-only artifact validation, matched attacker pairing, defender-level aggregation, tables and plots.
+- `anc/security.py`: checkpoint-backed diagnostic reconstruction, sensitivity, key-diversity and determinism measurements on separate data streams.
+- `anc/config.py`: preflight validation shared by the training entry points.
 - `configs/*.json`: seed lists, update counts, batches, time limits and independently configured Eve widths. An update is one optimizer step; a defender cycle includes one AB and two Eve steps.
-- `tests/test_core.py`: shape, mixing, parameter-count, stream, metric, gradient, isolation, freeze and save/load checks. Prediction roundtrip tolerance is absolute 1e-7, relative 0.
+- `tests/`: model/training, workflow, configuration, artifact-analysis and security-diagnostic coverage. Prediction roundtrip tolerance is absolute 1e-7, relative 0.
 - `EXPERIMENT_PLAN.md`: controls, source findings, architecture decisions, loss scaling, full-study analysis and limitations.
 - `AI_AUDIT.md`: AI contributions, failures, verification evidence and human checks still needed.
 - `requirements.lock.txt`: tested package versions.

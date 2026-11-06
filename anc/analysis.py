@@ -6,6 +6,7 @@ import argparse
 import csv
 from dataclasses import dataclass, field
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -14,11 +15,16 @@ from statistics import fmean
 import tempfile
 from typing import Any
 
+from .config import ConfigError, validate_config
+from .core import stream_seed
+from .paths import require_external_output
+
 
 METRIC_NAMES = ("normalized_l1", "bit_error_rate", "message_accuracy")
 DIFFERENCE_NAMES = (*METRIC_NAMES, "seconds", "parameters")
 ATTACK_PATTERN = re.compile(r"attack_(baseline|wider)_(\d+)$")
 DEFENDER_PATTERN = re.compile(r"defender_(\d+)$")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -162,11 +168,69 @@ def _metrics(value: Any, path: Path, issues: list[AnalysisIssue]) -> dict[str, f
     result: dict[str, float] = {}
     for name in METRIC_NAMES:
         metric = value.get(name)
-        if isinstance(metric, bool) or not isinstance(metric, (int, float)):
-            _issue(issues, "invalid_final_metrics", path, f"Metric {name!r} must be numeric")
+        if not _finite_number(metric, minimum=0, maximum=1):
+            _issue(issues, "invalid_final_metrics", path, f"Metric {name!r} must be finite and between zero and one")
             return {}
         result[name] = float(metric)
     return result
+
+
+def _valid_metric_mapping(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return all(
+        _finite_number(value.get(name), minimum=0, maximum=1)
+        for name in METRIC_NAMES
+    )
+
+
+def _finite_number(value: Any, minimum: float | None = None, maximum: float | None = None) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        return False
+    return (
+        math.isfinite(numeric)
+        and (minimum is None or numeric >= minimum)
+        and (maximum is None or numeric <= maximum)
+    )
+
+
+def _validate_history(
+    rows: list[dict[str, Any]],
+    path: Path,
+    model_keys: tuple[str, ...],
+    expected_updates: Any,
+    issues: list[AnalysisIssue],
+) -> bool:
+    if not rows:
+        return False
+    previous_step = -1
+    for line_number, row in enumerate(rows, 1):
+        step = row.get("step")
+        seconds = row.get("seconds")
+        valid = (
+            not isinstance(step, bool)
+            and isinstance(step, int)
+            and step >= 0
+            and step > previous_step
+            and _finite_number(seconds, minimum=0)
+            and all(_valid_metric_mapping(row.get(key)) for key in model_keys)
+        )
+        if not valid:
+            _issue(issues, "invalid_history", path, f"Line {line_number} has an invalid step, runtime, or metric record")
+            return False
+        previous_step = step
+    if isinstance(expected_updates, int) and previous_step != expected_updates:
+        _issue(issues, "invalid_history", path, "Final validation step does not match the completed update budget")
+        return False
+    return True
+
+
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and SHA256_PATTERN.fullmatch(value) is not None
 
 
 def _discover_attacker(
@@ -183,7 +247,14 @@ def _discover_attacker(
     metrics_path = defender.path / "test_results.json"
     final = _metrics(defender.final_metrics.get(path.name), metrics_path, issues)
     config = metadata.get("config") if isinstance(metadata.get("config"), dict) else {}
-    valid = bool(metadata and status and parent and history and final)
+    history_valid = _validate_history(
+        history,
+        path / "history.jsonl",
+        ("eve",),
+        defender.config.get("attacker_updates"),
+        issues,
+    )
+    valid = bool(metadata and status and parent and history_valid and final)
 
     if metadata and (metadata.get("stage") != "attack" or metadata.get("seed") != seed):
         _issue(
@@ -196,6 +267,10 @@ def _discover_attacker(
     if config != defender.config:
         _issue(issues, "config_mismatch", path / "metadata.json", "Attacker config differs from defender config")
         valid = False
+    configured_seeds = defender.config.get("attacker_seeds")
+    if not isinstance(configured_seeds, list) or seed not in configured_seeds:
+        _issue(issues, "unconfigured_attacker", path, "Attacker seed is not declared in the defender configuration")
+        valid = False
     if status:
         if status.get("status") != "complete":
             _issue(issues, "incomplete_attacker", path / "status.json", "Attacker status is not complete")
@@ -204,7 +279,14 @@ def _discover_attacker(
         if status.get("updates") != expected:
             _issue(issues, "budget_mismatch", path / "status.json", "Attacker did not complete the configured update budget")
             valid = False
-        if not isinstance(status.get("seconds"), (int, float)) or not isinstance(status.get("parameters"), int):
+        seconds = status.get("seconds")
+        parameters = status.get("parameters")
+        if (
+            not _finite_number(seconds, minimum=0)
+            or isinstance(parameters, bool)
+            or not isinstance(parameters, int)
+            or parameters <= 0
+        ):
             _issue(issues, "invalid_status", path / "status.json", "Runtime and parameter count are required")
             valid = False
     expected_channels = defender.config.get(f"{architecture}_channels")
@@ -214,6 +296,10 @@ def _discover_attacker(
     expected_hash = defender.final_metrics.get("_defender_hash")
     if parent and expected_hash is not None and parent.get("checkpoint_sha256") != expected_hash:
         _issue(issues, "checkpoint_mismatch", path / "parent.json", "Attacker used a different defender checkpoint")
+        valid = False
+    expected_stream = stream_seed(defender.seed, "attacker_train")
+    if parent and parent.get("data_stream_seed") != expected_stream:
+        _issue(issues, "stream_mismatch", path / "parent.json", "Attacker training stream does not match the defender seed")
         valid = False
 
     return AttackerRun(
@@ -245,11 +331,25 @@ def discover_runs(root: Path) -> AnalysisInventory:
         status = _read_json(path / "status.json", issues) or {}
         history = _read_jsonl(path / "history.jsonl", issues)
         test_result = _read_json(path / "test_results.json", issues) or {}
-        config = metadata.get("config") if isinstance(metadata.get("config"), dict) else {}
+        raw_config = metadata.get("config") if isinstance(metadata.get("config"), dict) else {}
+        try:
+            config = validate_config(raw_config)
+            configuration_valid = True
+        except ConfigError as error:
+            config = raw_config
+            configuration_valid = False
+            _issue(issues, "invalid_configuration", path / "metadata.json", str(error))
         raw_metrics = test_result.get("metrics") if isinstance(test_result.get("metrics"), dict) else {}
         final_metrics = dict(raw_metrics)
         final_metrics["_defender_hash"] = test_result.get("defender_hash")
-        valid = bool(metadata and status and history and raw_metrics)
+        history_valid = _validate_history(
+            history,
+            path / "history.jsonl",
+            ("bob", "training_eve"),
+            config.get("defender_updates"),
+            issues,
+        )
+        valid = bool(metadata and status and history_valid and raw_metrics and configuration_valid)
         if metadata and (metadata.get("stage") != "defender" or metadata.get("seed") != seed):
             _issue(issues, "defender_metadata_mismatch", path / "metadata.json", "Defender identity or stage is inconsistent")
             valid = False
@@ -257,9 +357,56 @@ def discover_runs(root: Path) -> AnalysisInventory:
             if status.get("status") != "complete":
                 _issue(issues, "incomplete_defender", path / "status.json", "Defender status is not complete")
                 valid = False
-            if status.get("updates") != config.get("defender_updates"):
+            updates = status.get("updates")
+            if isinstance(updates, bool) or not isinstance(updates, int) or updates != config.get("defender_updates"):
                 _issue(issues, "defender_budget_mismatch", path / "status.json", "Defender budget is incomplete")
                 valid = False
+        for required_name in ("bob", "random_guess"):
+            if not _metrics(raw_metrics.get(required_name), path / "test_results.json", issues):
+                valid = False
+        expected_examples = config.get("test_size")
+        expected_test_seed = stream_seed(seed, "final_test")
+        examples = test_result.get("examples")
+        test_seed = test_result.get("test_seed")
+        if (
+            isinstance(examples, bool)
+            or not isinstance(examples, int)
+            or examples <= 0
+            or examples != expected_examples
+            or isinstance(test_seed, bool)
+            or not isinstance(test_seed, int)
+            or test_seed != expected_test_seed
+        ):
+            _issue(
+                issues,
+                "test_provenance_mismatch",
+                path / "test_results.json",
+                "Final-test sample count or stream seed differs from the defender configuration",
+            )
+            valid = False
+        defender_hash = test_result.get("defender_hash")
+        checkpoint_hashes = test_result.get("checkpoint_hashes")
+        if not _is_sha256(defender_hash) or not isinstance(checkpoint_hashes, dict) or any(
+            not _is_sha256(value) for value in checkpoint_hashes.values()
+        ):
+            _issue(
+                issues,
+                "invalid_checkpoint_hashes",
+                path / "test_results.json",
+                "Defender and attacker checkpoint hashes must be complete SHA-256 values",
+            )
+            valid = False
+        attack_metric_names = {
+            name for name in raw_metrics if isinstance(name, str) and ATTACK_PATTERN.fullmatch(name)
+        }
+        if isinstance(checkpoint_hashes, dict) and set(checkpoint_hashes) != attack_metric_names:
+            _issue(
+                issues,
+                "checkpoint_hash_mismatch",
+                path / "test_results.json",
+                "Checkpoint hash keys must exactly match saved attacker metric keys",
+            )
+            valid = False
         defender = DefenderRun(path, seed, config, status, history, final_metrics, valid=valid)
         for attack_path in sorted(path.glob("attack_*")):
             attack_match = ATTACK_PATTERN.fullmatch(attack_path.name)
@@ -483,7 +630,13 @@ def _plot_validation(inventory: AnalysisInventory, path: Path) -> bool:
         return False
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), constrained_layout=True)
     for label, history, model_key in series:
-        usable = [row for row in history if isinstance(row.get(model_key), dict)]
+        usable = [
+            row
+            for row in history
+            if not isinstance(row.get("step"), bool)
+            and isinstance(row.get("step"), int)
+            and _valid_metric_mapping(row.get(model_key))
+        ]
         for axis, metric in zip(axes, METRIC_NAMES):
             axis.plot(
                 [row.get("step") for row in usable],
@@ -503,6 +656,7 @@ def write_analysis(root: Path, output: Path) -> dict[str, Any]:
     """Write analysis artifacts to a new directory while leaving ``root`` untouched."""
 
     root, output = Path(root), Path(output)
+    require_external_output(root, output)
     if output.exists():
         raise FileExistsError(f"Analysis output already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -512,7 +666,7 @@ def write_analysis(root: Path, output: Path) -> dict[str, Any]:
         pairs = pair_attackers(inventory)
         summary = summarize_pairs(pairs)
         result = {
-            "input_root": str(root.resolve()),
+            "input_root": root.as_posix(),
             "defender_count": len(inventory.defenders),
             "attacker_count": sum(len(defender.attackers) for defender in inventory.defenders),
             "pair_count": len(pairs),

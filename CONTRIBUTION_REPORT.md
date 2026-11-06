@@ -22,7 +22,7 @@ All pre-existing tracked-file modifications were line-ending-only (`git diff --i
 - averages attacker initializations within each defender before reporting means and observed ranges across defenders;
 - keeps validation histories separate from final-test metrics;
 - writes JSON, CSV, Markdown, and 300-DPI figures to a new output directory; and
-- refuses to overwrite an existing analysis directory.
+- refuses to overwrite an existing analysis directory or place outputs inside the input experiment tree.
 
 The generated pilot outputs are in `analysis/pilot/`. They include the final-test table, defender aggregate table, final-test comparison plot, paired-difference plot, and validation-only curves.
 
@@ -38,7 +38,7 @@ The generated pilot outputs are in `analysis/pilot/`. They include the final-tes
 - ciphertext diversity for an independently sampled alternative key; and
 - repeated-input determinism.
 
-For checkpoint-bearing runs, the CLI loads the saved Alice/Bob and all complete Eve checkpoints, writes `security_report.json`, and creates reconstruction, per-bit, and sensitivity figures. It uses `security_diagnostic`, `security_key_alternative`, and `security_random_guess` streams; it never reads or writes `test_results.json`.
+For checkpoint-bearing runs, the CLI validates defender and attacker identity, configuration, budget, stream, channels and checkpoint step before loading models. It writes `security_report.json` and creates reconstruction, per-bit, and sensitivity figures. It uses `security_diagnostic`, `security_key_alternative`, and `security_random_guess` streams; it never reads or writes `test_results.json`, and it rejects output paths inside the defender tree.
 
 Running it against the archived pilot produced a structured `unavailable` report because `reports/pilot/defender_101/best.pt` is absent. No sensitivity or new reconstruction values were invented. These diagnostics describe empirical neural-network behavior and do not prove semantic security, computational security, or cryptographic confidentiality.
 
@@ -53,20 +53,25 @@ Added:
 - `anc/analysis.py`
 - `anc/security.py`
 - `anc/config.py`
+- `anc/paths.py`
 - `tests/test_analysis.py`
 - `tests/test_security.py`
 - `tests/test_config.py`
 - `analysis/pilot/` generated analysis, figures, benchmark evidence, and security limitation report
+- `analysis/pilot/SHA256SUMS` generated-artifact integrity manifest
 - `CONTRIBUTION_REPORT.md`
 - `RESULTS_ANALYSIS.md`
 - `docs/superpowers/specs/2026-11-04-analysis-security-design.md`
 - `docs/superpowers/plans/2026-11-04-analysis-security-evaluation.md`
+- `docs/superpowers/plans/2026-11-05-pre-push-hardening.md`
+- `.gitattributes`
 
 Modified with focused changes:
 
 - `anc/run.py`: validate configuration before setup/training.
 - `study.py`: validate configuration before creating a run root.
 - `tests/test_workflow.py`: use a complete valid synthetic workflow configuration.
+- `README.md` and `TESTING_PROTOCOL.md`: document the analysis/security commands and portable repository-root usage.
 
 No saved pilot metric, history, metadata, status, or final-test file was modified.
 
@@ -80,20 +85,24 @@ Final verification command:
 MPLCONFIGDIR=/tmp/anc-mpl .venv/bin/python -m pytest -q
 ```
 
-The final suite contains 61 tests. New coverage includes:
+The final suite contains 92 tests. New coverage includes:
 
 - literal metric and paired-difference calculations;
 - defender-level aggregation and the single-defender significance caveat;
 - missing/malformed JSON and JSONL;
+- non-finite/out-of-range metrics, malformed history rows, final-test stream/size mismatches and incomplete hash-key provenance;
 - incomplete, mismatched, and unequal-budget attackers;
-- read-only analysis and output overwrite protection;
+- read-only analysis, nested-output rejection and output overwrite protection;
 - deterministic diagnostic streams distinct from `final_test`;
 - tensor shapes, dtypes, per-bit errors, random guessing, sensitivity matrices, and determinism;
 - real checkpoint load/evaluate integration and missing-checkpoint reporting;
+- strict checkpoint identity, configuration, budget, stream, channel and saved-step validation;
 - preservation of reserved `test_results.json`; and
 - configuration schema, ranges, seeds, channels, and preflight ordering.
 
-This session used the same locked dependencies in `/tmp/anc-upgrade-venv` because unpacking the PyTorch wheel into the Windows-mounted repository `.venv` stalled. That environment-location change does not affect source or scientific behavior.
+Final verification used the same locked dependencies from `/tmp/anc-prepush-site-20261105` because unpacking the PyTorch wheel into the Windows-mounted repository `.venv` stalled. That environment-location change does not affect source or scientific behavior.
+
+Generated pilot artifacts are checksummed in `analysis/pilot/SHA256SUMS`. The saved summary now records the portable logical input `reports/pilot` rather than a workstation-specific absolute path. No saved pilot metric, history, status, metadata or final-test result was changed.
 
 ## Actual experimental findings
 
@@ -171,4 +180,4 @@ python3 study.py run --profile full --root runs/full_approved_01
 - Consider stronger attackers and formal leakage measures; empirical Eve reconstruction alone cannot establish cryptographic security.
 - Independently review the loss scaling, SAME-padding interpretation, and scientific protocol before presenting this as a reproduction.
 
-Commits already created before this report: `9c4fc21`, `566f257`, `7a97530`, `b2eb04c`, `e2b9727`, and `5903d82`. Use `git log --oneline main..feature/analysis-security-evaluation` for the final documentation commit as well.
+Use `git log --oneline main..feature/analysis-security-evaluation` for the complete reviewed commit sequence.

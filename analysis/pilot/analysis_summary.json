@@ -1,5 +1,5 @@
 {
-  "input_root": "/mnt/c/Users/squid/Software dev/Adversarial-Upgrade/reports/pilot",
+  "input_root": "reports/pilot",
   "defender_count": 1,
   "attacker_count": 2,
   "pair_count": 1,
