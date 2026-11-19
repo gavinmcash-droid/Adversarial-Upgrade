@@ -1,0 +1,9 @@
+{
+  "status": "unavailable",
+  "defender_seed": 101,
+  "samples": 1024,
+  "limitations": [
+    "Missing trained defender checkpoint: reports/pilot/defender_101/best.pt"
+  ],
+  "interpretation": "These empirical neural-network diagnostics are not a proof of semantic security, computational security, or cryptographic confidentiality."
+}

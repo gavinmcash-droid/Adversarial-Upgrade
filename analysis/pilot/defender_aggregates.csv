@@ -1,0 +1,2 @@
+defender_seed,pair_count,mean_difference_normalized_l1,mean_difference_bit_error_rate,mean_difference_message_accuracy,mean_difference_seconds,mean_difference_parameters
+101,1,-0.030461758375167847,-0.0201568603515625,0.01171875,0.41202097200039134,118.0

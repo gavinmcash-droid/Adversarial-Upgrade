@@ -9,6 +9,17 @@ study = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(study)
 
 
+def valid_config():
+    return {
+        'defender_seeds':[1], 'attacker_seeds':[2],
+        'defender_updates':4, 'attacker_updates':4,
+        'batch_size':8, 'validation_size':16, 'test_size':32,
+        'validate_every':2, 'learning_rate':.0008, 'threads':1,
+        'defender_seconds':30, 'attacker_seconds':30,
+        'baseline_channels':[2,4,4,1], 'wider_channels':[4,8,8,1],
+    }
+
+
 def test_incomplete_budget_rejected(tmp_path):
     cfg = {'defender_seeds':[1], 'defender_updates':4}
     parent = tmp_path / 'defender_1'; parent.mkdir()
@@ -19,7 +30,7 @@ def test_incomplete_budget_rejected(tmp_path):
 
 def test_failed_gate_never_evaluates(tmp_path, monkeypatch):
     config = tmp_path/'input.json'
-    config.write_text(json.dumps({'defender_seeds':[1], 'defender_updates':4}))
+    config.write_text(json.dumps(valid_config()))
     calls = []
     def fake_execute(args, log=None):
         calls.append(args)

@@ -2,7 +2,7 @@
 
 ## Three-command workflow
 
-From `/home/gavinator6454/Projects/Adversarial-Upgrade`, the streamlined interface is:
+From the repository root, the streamlined interface is:
 
 ```bash
 python3 study.py setup
@@ -34,7 +34,7 @@ Both fresh attackers must have the same examples, batch size, optimizer settings
 Open a terminal and run:
 
 ```bash
-cd /home/gavinator6454/Projects/Adversarial-Upgrade
+cd /path/to/Adversarial-Upgrade
 pwd
 .venv/bin/python --version
 .venv/bin/python -c 'import torch; print("PyTorch:", torch.__version__); print("CUDA available:", torch.cuda.is_available())'
@@ -46,7 +46,7 @@ If `.venv/bin/python` is missing, follow the environment installation commands i
 
 ## 3. Know where the files are
 
-All paths below are relative to `/home/gavinator6454/Projects/Adversarial-Upgrade`.
+All paths below are relative to the repository root.
 
 | Location | What it contains |
 |---|---|
@@ -170,7 +170,7 @@ The following commands are provided for deliberate execution; the full study has
 This command processes all three configured defender seeds sequentially. It can run for a long time with little terminal output. Each defender writes `history.jsonl` at validation intervals. From a second terminal, you can inspect progress, for example:
 
 ```bash
-cd /home/gavinator6454/Projects/Adversarial-Upgrade
+cd /path/to/Adversarial-Upgrade
 tail -n 3 runs/full_protocol_01/defender_1101/history.jsonl
 ```
 
@@ -255,7 +255,24 @@ For the main comparison:
 3. Report all three defender-level averages, their mean and their range. Also show every individual run rather than only the best attacker.
 4. Report continuous L1, whole-message accuracy, Bob's quality, actual budgets and each attacker's runtime separately.
 
-There is currently no dedicated cross-defender statistical-analysis command. Calculate these summaries from the saved JSON in a spreadsheet or a separate analysis script, retaining the input filenames and formulas. Do not treat eighteen attackers as eighteen independent defender replications; attackers within a defender share the same learned communication scheme. Three defenders provide limited evidence and weak uncertainty estimates.
+Generate the predeclared paired summaries, tables and plots with the dedicated read-only analyzer. The output directory must be new and outside the saved study tree:
+
+```bash
+MPLCONFIGDIR=/tmp/anc-mpl .venv/bin/python -m anc.analysis \
+  --root runs/full_protocol_01 --output analysis/full_protocol_01
+```
+
+The analyzer validates artifact structure, configured seeds and budgets, expected stream/test seeds, metric ranges, and recorded checkpoint-hash format, key coverage and internal consistency before forming pairs. It does not hash checkpoint files or establish their trusted origin; retain full run directories and verify checkpoint bytes separately when that guarantee matters. Inspect `analysis_summary.json` for every excluded or malformed artifact. Do not treat eighteen attackers as eighteen independent defender replications; attackers within a defender share the same learned communication scheme. Three defenders provide limited evidence and weak uncertainty estimates.
+
+For each checkpoint-bearing defender, run the separate diagnostic command into another new directory:
+
+```bash
+MPLCONFIGDIR=/tmp/anc-mpl .venv/bin/python -m anc.security \
+  --defender runs/full_protocol_01/defender_1101 \
+  --output analysis/full_protocol_01-defender-1101-security --samples 1024
+```
+
+This command verifies saved attacker identity, configuration, budget, stream, channels and checkpoint step before including it. Its reconstruction and sensitivity measurements use diagnostic-only streams and do not establish semantic or computational security.
 
 Random guesses should have BER near 50%, with finite-sample fluctuations. Chance-level BER does not prove that no information leaks. Continuous loss is not measured discrete bit error. Better Bob reconstruction does not by itself establish confidentiality. A result where wider Eve wins on one seed and loses on another should be reported as such.
 

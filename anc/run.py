@@ -8,6 +8,7 @@ import subprocess
 import time
 import traceback
 import torch
+from .config import validate_config
 from .core import Keyed, Eve, BASE, sample, generator, stream_seed, metrics, errors, freeze, ab_step, eve_step
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,7 +183,7 @@ def main():
     parser.add_argument('command',choices=['defender','attack','evaluate','plot','demo'])
     parser.add_argument('--config',required=True,type=Path)
     parser.add_argument('--root',required=True,type=Path)
-    args=parser.parse_args(); cfg=json.loads(args.config.read_text()); setup(cfg)
+    args=parser.parse_args(); cfg=validate_config(json.loads(args.config.read_text())); setup(cfg)
     for seed in cfg['defender_seeds']:
         parent=args.root/f'defender_{seed}'
         if args.command!='defender':
